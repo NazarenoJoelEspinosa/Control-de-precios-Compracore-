@@ -13,6 +13,7 @@ const STATE_LABELS: Record<PriceListItem["match_state"], string> = {
   not_found: "No encontrado",
   new_product: "Nuevo producto",
   presentation_diff: "Presentación distinta",
+  discontinued: "Discontinuado",
 };
 
 function buildSheetData(rows: ExportRow[]) {

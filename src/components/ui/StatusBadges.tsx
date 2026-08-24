@@ -7,6 +7,7 @@ const STATE_CONFIG: Record<MatchState, { label: string; dot: string; bg: string;
   not_found: { label: "No encontrado", dot: "bg-danger-500", bg: "bg-danger-50", text: "text-danger-500" },
   new_product: { label: "Nuevo producto", dot: "bg-info-500", bg: "bg-info-50", text: "text-info-500" },
   presentation_diff: { label: "Presentación distinta", dot: "bg-violet-500", bg: "bg-violet-50", text: "text-violet-500" },
+  discontinued: { label: "Discontinuado", dot: "bg-steel-300", bg: "bg-steel-100", text: "text-steel-600" },
 };
 
 export function MatchStateBadge({ state }: { state: MatchState }) {

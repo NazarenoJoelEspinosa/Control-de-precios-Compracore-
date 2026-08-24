@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { parseDecimal, extractPresentation, presentationAlert } from "@/lib/normalize";
-import { scoreDescription, buildProductIndexEntry } from "@/lib/matching";
+import { parseDecimal, extractPresentation, presentationAlert, codeFamilySimilarity, normalizeCodeForMatch } from "@/lib/normalize";
+import { scoreDescription, buildProductIndexEntry, matchItem, type MatchDeps, type ProductForMatch } from "@/lib/matching";
 
 describe("parseDecimal — formato argentino y variantes", () => {
   it("interpreta coma decimal argentina", () => {
@@ -77,5 +77,69 @@ describe("extractPresentation / presentationAlert", () => {
   it("extrae cantidad de patrones comunes (x500, c/500)", () => {
     expect(extractPresentation("Tornillo 8x1 x500").count).toBe(500);
     expect(extractPresentation("Tornillo 8x1 c/500").count).toBe(500);
+  });
+});
+
+describe("codeFamilySimilarity", () => {
+  it("detecta un código base compartido con sufijo de cantidad distinto", () => {
+    const a = normalizeCodeForMatch("TOR8X1X100");
+    const b = normalizeCodeForMatch("TOR8X1X1000");
+    expect(codeFamilySimilarity(a, b)).toBeGreaterThanOrEqual(0.6);
+  });
+
+  it("no confunde códigos que sólo comparten el prefijo por casualidad", () => {
+    const a = normalizeCodeForMatch("TOR8X1X100");
+    const b = normalizeCodeForMatch("TOX99Z");
+    expect(codeFamilySimilarity(a, b)).toBeLessThan(0.6);
+  });
+});
+
+describe("matchItem — flujo completo", () => {
+  function buildDeps(products: ProductForMatch[]): MatchDeps {
+    return {
+      byExactCode: new Map(products.map((p) => [p.code.toUpperCase(), p])),
+      byNormalizedCode: new Map(products.map((p) => [normalizeCodeForMatch(p.code), p])),
+      confirmedEquivalences: new Map(),
+      rejectedEquivalences: new Set(),
+      productsById: new Map(products.map((p) => [p.id, p])),
+      descriptionCandidates: products,
+    };
+  }
+
+  it("código exacto no muestra candidatos alternativos", () => {
+    const products: ProductForMatch[] = [
+      { id: "1", code: "4587", description: "Disco de corte 115 mm", current_price: 2000, currency: "ARS" },
+    ];
+    const result = matchItem("sup1", { supplier_code: "4587", supplier_description: "Disco de corte 115 mm" }, buildDeps(products));
+    expect(result.matchState).toBe("safe");
+    expect(result.candidates).toHaveLength(1);
+  });
+
+  it("detecta presentación distinta por familia de código (mismo tornillo, otro pack)", () => {
+    const products: ProductForMatch[] = [
+      { id: "1", code: "TOR8X1X100", description: "Tornillo autoperforante 8x1 x100", unit: "Caja", current_price: 1800, currency: "ARS" },
+    ];
+    const result = matchItem(
+      "sup1",
+      { supplier_code: "TOR8X1X1000", supplier_description: "Tornillo autoperforante 8x1 x1000", supplier_unit: "Caja" },
+      buildDeps(products)
+    );
+    expect(result.matchState).toBe("presentation_diff");
+    expect(result.matchLevel).toBe("code_family");
+    expect(result.matchedProductId).toBe("1");
+  });
+
+  it("por debajo del umbral de revisión, manda directo a no encontrado sin mostrar candidato dudoso", () => {
+    const products: ProductForMatch[] = [
+      { id: "1", code: "9999", description: "Bulón hexagonal M8", current_price: 500, currency: "ARS" },
+    ];
+    const result = matchItem(
+      "sup1",
+      { supplier_code: "AAAA", supplier_description: "Zapatilla deportiva talle 42" },
+      buildDeps(products),
+      { safeMin: 97, reviewMin: 50 }
+    );
+    expect(result.matchState).toBe("not_found");
+    expect(result.matchedProductId).toBeNull();
   });
 });

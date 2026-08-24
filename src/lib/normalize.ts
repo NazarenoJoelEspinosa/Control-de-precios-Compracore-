@@ -48,6 +48,23 @@ export function normalizeCodeForMatch(code: unknown): string {
   return c.replace(/[^A-Z0-9]/g, "");
 }
 
+/**
+ * Similitud de "familia de código": cuánto comparten dos códigos normalizados
+ * desde el principio. Pensado para detectar el caso real de ferretería donde
+ * el proveedor usa el mismo código base pero le agrega un sufijo de cantidad
+ * ("TOR8X1X100" vs "TOR8X1X1000") — el código NO es idéntico, pero es
+ * evidentemente el mismo producto en otra presentación.
+ * Devuelve un ratio 0-1 sobre la longitud del código más corto.
+ */
+export function codeFamilySimilarity(a: string, b: string): number {
+  if (!a || !b) return 0;
+  const minLen = Math.min(a.length, b.length);
+  if (minLen < 3) return 0;
+  let common = 0;
+  while (common < minLen && a[common] === b[common]) common++;
+  return common / minLen;
+}
+
 export function tokenize(text: unknown): string[] {
   let clean = canonicalHeader(text);
   // separar números pegados a letras: "30cmxpar" -> "30 cm x par"

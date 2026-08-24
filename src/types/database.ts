@@ -4,8 +4,8 @@
  * sola persona usando su propia máquina.
  */
 
-export type MatchLevel = "exact_code" | "normalized_code" | "equivalence" | "description" | "none";
-export type MatchState = "safe" | "review" | "not_found" | "new_product" | "presentation_diff";
+export type MatchLevel = "exact_code" | "normalized_code" | "equivalence" | "code_family" | "description" | "none";
+export type MatchState = "safe" | "review" | "not_found" | "new_product" | "presentation_diff" | "discontinued";
 export type PriceListStatus = "uploaded" | "mapped" | "processing" | "processed" | "error";
 export type PriceChangeStatus = "pending" | "approved" | "rejected" | "edited";
 export type Currency = "ARS" | "USD";
@@ -88,6 +88,7 @@ export interface ComparisonSession {
   not_found_items: number;
   new_products: number;
   presentation_diff_items: number;
+  discontinued_items: number;
   price_increases: number;
   price_decreases: number;
   price_unchanged: number;
@@ -123,4 +124,19 @@ export interface Equivalence {
   confidence: number | null;
   created_at: string;
   updated_at: string;
+}
+
+/** Código de proveedor confirmado como "no existe / no lo vendemos más" — se
+ * recuerda para no volver a preguntar en la próxima lista de ese proveedor. */
+export interface DiscontinuedCode {
+  id: string;
+  supplier_id: string;
+  supplier_code: string;
+  created_at: string;
+}
+
+export interface MatchingSettings {
+  id: "thresholds";
+  safe_min: number;
+  review_min: number;
 }

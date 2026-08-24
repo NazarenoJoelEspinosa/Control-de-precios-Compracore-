@@ -83,18 +83,26 @@ export default function DashboardPage() {
             <p className="eyebrow mb-3">Comparaciones recientes</p>
             <div className="panel divide-y divide-steel-100">
               {sessions.map((s) => (
-                <Link
-                  key={s.id}
-                  to={`/comparisons/${s.id}`}
-                  className="flex items-center justify-between px-4 py-3 text-sm hover:bg-steel-50"
-                >
-                  <span className="text-ink">{new Date(s.created_at).toLocaleDateString("es-AR")}</span>
-                  <span className="text-steel-600">{s.total_items} productos</span>
-                  <span className="text-steel-600">{s.review_items} para revisar</span>
-                  <span className={s.status === "open" ? "text-amber-600" : "text-success-500"}>
-                    {s.status === "open" ? "Abierta" : "Cerrada"}
-                  </span>
-                </Link>
+                <div key={s.id} className="flex items-center justify-between px-4 py-3 text-sm hover:bg-steel-50">
+                  <Link to={`/comparisons/${s.id}`} className="flex flex-1 items-center gap-6">
+                    <span className="text-ink">{new Date(s.created_at).toLocaleDateString("es-AR")}</span>
+                    <span className="text-steel-600">{s.total_items} productos</span>
+                    <span className="text-steel-600">{s.review_items} para revisar</span>
+                    <span className={s.status === "open" ? "text-amber-600" : "text-success-500"}>
+                      {s.status === "open" ? "Abierta" : "Cerrada"}
+                    </span>
+                  </Link>
+                  <button
+                    onClick={async () => {
+                      if (!window.confirm("¿Eliminar esta comparación?")) return;
+                      await comparisonSessionsRepo.remove(s.id);
+                      setSessions((prev) => prev.filter((x) => x.id !== s.id));
+                    }}
+                    className="ml-3 text-xs text-danger-500 hover:underline"
+                  >
+                    Eliminar
+                  </button>
+                </div>
               ))}
             </div>
           </div>

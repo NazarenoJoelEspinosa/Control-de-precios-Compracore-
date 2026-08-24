@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { to: "/history", label: "Historial" },
   { to: "/suppliers", label: "Proveedores" },
   { to: "/equivalences", label: "Diccionario" },
+  { to: "/settings", label: "Configuración" },
 ];
 
 export default function AppShell({ children }: { children: ReactNode }) {

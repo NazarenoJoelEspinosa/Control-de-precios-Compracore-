@@ -9,10 +9,10 @@
  * Este archivo es puro TS (sin dependencias de React) para poder correr
  * tanto en la Edge Function (Deno) como en tests.
  */
-import { normalizeCodeForMatch, normalizeText, tokenize, stemToken, trigrams, presentationAlert } from "./normalize";
+import { normalizeCodeForMatch, normalizeText, tokenize, stemToken, trigrams, presentationAlert, codeFamilySimilarity } from "./normalize";
 
-export type MatchLevel = "exact_code" | "normalized_code" | "equivalence" | "description" | "none";
-export type MatchState = "safe" | "review" | "not_found" | "new_product" | "presentation_diff";
+export type MatchLevel = "exact_code" | "normalized_code" | "equivalence" | "code_family" | "description" | "none";
+export type MatchState = "safe" | "review" | "not_found" | "new_product" | "presentation_diff" | "discontinued";
 
 export interface ProductForMatch {
   id: string;
@@ -36,10 +36,10 @@ export interface CandidateScore {
   score: number; // 0-100
 }
 
-/** Umbrales por defecto — configurables a futuro por proveedor/organización. */
+/** Umbrales por defecto — configurables desde la pantalla de Configuración. */
 export const DEFAULT_THRESHOLDS = {
   safeMin: 97, // con equivalencia/código o score de descripción muy alto
-  reviewMin: 70, // 70-96 -> revisar
+  reviewMin: 50, // por debajo de esto, directamente "no encontrado"
 };
 
 /**
@@ -190,7 +190,47 @@ export function matchItem(
     }
   }
 
-  // Nivel 4: descripción (fuzzy), excluyendo productos rechazados para este código
+  // Nivel 4a: "familia de código" — el código del proveedor no es idéntico,
+  // pero comparte una base fuerte con un producto interno (ej: mismo código
+  // con un sufijo de cantidad distinto: "TOR8X1X100" vs "TOR8X1X1000"), Y la
+  // presentación en la descripción efectivamente difiere. Esto es más
+  // confiable que un match por descripción genérico porque el código ya nos
+  // dice "es la misma familia de producto" — el usuario puede terminar
+  // asociando VARIOS códigos de proveedor (uno por presentación) al mismo
+  // producto interno.
+  const normalizedItemCode = normalizeCodeForMatch(item.supplier_code);
+  let bestFamily: { product: ProductForMatch; similarity: number } | null = null;
+  if (normalizedItemCode.length >= 3) {
+    for (const p of deps.descriptionCandidates) {
+      const sim = codeFamilySimilarity(normalizedItemCode, normalizeCodeForMatch(p.code));
+      if (sim >= 0.6 && (!bestFamily || sim > bestFamily.similarity)) {
+        bestFamily = { product: p, similarity: sim };
+      }
+    }
+  }
+  if (bestFamily) {
+    const alert = presentationAlert(
+      bestFamily.product.description,
+      bestFamily.product.unit ?? "",
+      item.supplier_description,
+      item.supplier_unit ?? ""
+    );
+    if (alert.reason) {
+      return buildResult(
+        bestFamily.product,
+        "code_family",
+        Math.round(70 + bestFamily.similarity * 25),
+        item,
+        thresholds,
+        []
+      );
+    }
+    // Código muy parecido pero sin diferencia de presentación detectada:
+    // no lo forzamos acá, dejamos que el matching por descripción decida —
+    // puede ser exactamente el mismo producto con un código apenas distinto.
+  }
+
+  // Nivel 4b: descripción (fuzzy), excluyendo productos rechazados para este código
   const queryText = [item.supplier_description, item.supplier_brand ?? "", item.supplier_unit ?? ""]
     .filter(Boolean)
     .join(" ");
@@ -216,6 +256,19 @@ export function matchItem(
   }
 
   const best = scored[0];
+  if (best.score < thresholds.reviewMin) {
+    // Por debajo del umbral de revisión, ni siquiera mostramos el candidato:
+    // es preferible "no encontrado" (manda a búsqueda manual) que un
+    // candidato de baja confianza que distraiga la revisión.
+    return {
+      matchedProductId: null,
+      matchLevel: "none",
+      matchScore: null,
+      matchState: "not_found",
+      presentationReason: "",
+      candidates: scored,
+    };
+  }
   return buildResult(best.product, "description", best.score, item, thresholds, scored.slice(1));
 }
 
@@ -239,10 +292,8 @@ function buildResult(
     state = "presentation_diff";
   } else if (level === "exact_code" || level === "equivalence" || score >= thresholds.safeMin) {
     state = "safe";
-  } else if (score >= thresholds.reviewMin) {
-    state = "review";
   } else {
-    state = "review"; // por diseño: nunca auto-aprobar por debajo del umbral, aunque haya "algún" candidato
+    state = "review";
   }
 
   return {

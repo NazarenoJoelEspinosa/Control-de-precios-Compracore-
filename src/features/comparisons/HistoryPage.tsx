@@ -12,24 +12,32 @@ export default function HistoryPage() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    (async () => {
-      const sessions = await comparisonSessionsRepo.list();
-      const suppliers = await suppliersRepo.list();
-      const priceLists = await priceListsRepo.list();
-      const supplierById = new Map(suppliers.map((s) => [s.id, s.name]));
-      const listById = new Map(priceLists.map((l) => [l.id, l.file_name]));
+  async function load() {
+    const sessions = await comparisonSessionsRepo.list();
+    const suppliers = await suppliersRepo.list();
+    const priceLists = await priceListsRepo.list();
+    const supplierById = new Map(suppliers.map((s) => [s.id, s.name]));
+    const listById = new Map(priceLists.map((l) => [l.id, l.file_name]));
 
-      setRows(
-        sessions.map((s) => ({
-          ...s,
-          supplier_name: supplierById.get(s.supplier_id),
-          file_name: listById.get(s.price_list_id),
-        }))
-      );
-      setLoading(false);
-    })();
+    setRows(
+      sessions.map((s) => ({
+        ...s,
+        supplier_name: supplierById.get(s.supplier_id),
+        file_name: listById.get(s.price_list_id),
+      }))
+    );
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    load();
   }, []);
+
+  async function handleDelete(id: string) {
+    if (!window.confirm("¿Eliminar esta comparación? Se borra de forma permanente, junto con todos sus resultados.")) return;
+    await comparisonSessionsRepo.remove(id);
+    load();
+  }
 
   return (
     <div>
@@ -53,6 +61,7 @@ export default function HistoryPage() {
                 <th className="px-3 py-2">Revisión</th>
                 <th className="px-3 py-2">No encontrados</th>
                 <th className="px-3 py-2">Estado</th>
+                <th className="px-3 py-2"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-steel-100">
@@ -73,6 +82,11 @@ export default function HistoryPage() {
                     <span className={r.status === "open" ? "text-amber-600" : "text-success-500"}>
                       {r.status === "open" ? "Abierta" : "Cerrada"}
                     </span>
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <button onClick={() => handleDelete(r.id)} className="text-xs text-danger-500 hover:underline">
+                      Eliminar
+                    </button>
                   </td>
                 </tr>
               ))}

@@ -1,30 +1,59 @@
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams, Link } from "react-router-dom";
 import clsx from "clsx";
-import { comparisonSessionsRepo, equivalencesRepo, priceChangesRepo, priceListItemsRepo, productsRepo } from "@/lib/db";
+import { comparisonSessionsRepo, priceChangesRepo, priceListItemsRepo, productsRepo } from "@/lib/db";
 import { MatchStateBadge, PriceDeltaBadge } from "@/components/ui/StatusBadges";
+import MatchResolutionPanel from "@/components/MatchResolutionPanel";
 import { formatPrice } from "@/lib/normalize";
 import { exportAllResults, exportApprovedOnly, type ExportRow } from "@/lib/exportResults";
 import type { ComparisonSession, PriceChange, PriceListItem, Product } from "@/types/database";
 
-type FilterKey = "all" | "safe" | "review" | "not_found" | "new_product" | "presentation_diff" | "increased" | "decreased";
+type FilterKey =
+  | "all"
+  | "safe"
+  | "review"
+  | "not_found"
+  | "new_product"
+  | "presentation_diff"
+  | "discontinued"
+  | "increased"
+  | "decreased";
 
 const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "all", label: "Todos" },
   { key: "safe", label: "Coincidencias seguras" },
   { key: "review", label: "Revisar" },
   { key: "not_found", label: "No encontrados" },
-  { key: "new_product", label: "Nuevos" },
   { key: "presentation_diff", label: "Presentación distinta" },
+  { key: "discontinued", label: "Discontinuados" },
   { key: "increased", label: "Subieron" },
   { key: "decreased", label: "Bajaron" },
 ];
 
+type SortKey = "none" | "price_desc" | "price_asc" | "score_desc" | "score_asc" | "name_asc" | "name_desc";
+
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: "none", label: "Sin ordenar" },
+  { key: "price_desc", label: "Precio: mayor a menor" },
+  { key: "price_asc", label: "Precio: menor a mayor" },
+  { key: "score_desc", label: "Match: mayor a menor" },
+  { key: "score_asc", label: "Match: menor a mayor" },
+  { key: "name_asc", label: "Nombre: A-Z" },
+  { key: "name_desc", label: "Nombre: Z-A" },
+];
+
+/** Un ítem cuenta como "asociado" (confiable) cuando su match está confirmado, no sólo sugerido. */
+function isAssociated(row: ExportRow): boolean {
+  return row.item.match_state === "safe";
+}
+
 export default function ResultsPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
+  const navigate = useNavigate();
   const [session, setSession] = useState<ComparisonSession | null>(null);
   const [rows, setRows] = useState<ExportRow[]>([]);
   const [filter, setFilter] = useState<FilterKey>("all");
+  const [sort, setSort] = useState<SortKey>("none");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<ExportRow | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -63,9 +92,13 @@ export default function ResultsPage() {
   }
 
   const filtered = useMemo(() => {
-    return rows.filter((row) => {
-      if (filter === "increased" && !(row.change && row.change.diff_absolute > 0)) return false;
-      if (filter === "decreased" && !(row.change && row.change.diff_absolute < 0)) return false;
+    let result = rows.filter((row) => {
+      if (filter === "increased") {
+        return Boolean(row.change && row.change.diff_absolute > 0 && (row.change.status === "approved" || isAssociated(row)));
+      }
+      if (filter === "decreased") {
+        return Boolean(row.change && row.change.diff_absolute < 0 && (row.change.status === "approved" || isAssociated(row)));
+      }
       if (!["all", "increased", "decreased"].includes(filter) && row.item.match_state !== filter) return false;
       if (search) {
         const q = search.toLowerCase();
@@ -74,7 +107,32 @@ export default function ResultsPage() {
       }
       return true;
     });
-  }, [rows, filter, search]);
+
+    if (sort !== "none") {
+      result = [...result].sort((a, b) => {
+        switch (sort) {
+          case "price_desc":
+            return priceOf(b) - priceOf(a);
+          case "price_asc":
+            return priceOf(a) - priceOf(b);
+          case "score_desc":
+            return (b.item.match_score ?? -1) - (a.item.match_score ?? -1);
+          case "score_asc":
+            return (a.item.match_score ?? -1) - (b.item.match_score ?? -1);
+          case "name_asc":
+            return nameOf(a).localeCompare(nameOf(b));
+          case "name_desc":
+            return nameOf(b).localeCompare(nameOf(a));
+          default:
+            return 0;
+        }
+      });
+    }
+
+    return result;
+  }, [rows, filter, search, sort]);
+
+  const pendingReviewCount = rows.filter((r) => ["review", "presentation_diff", "not_found"].includes(r.item.match_state)).length;
 
   async function decide(row: ExportRow, status: "approved" | "rejected") {
     if (!row.change) return;
@@ -95,31 +153,11 @@ export default function ResultsPage() {
     load();
   }
 
-  async function confirmMatch(row: ExportRow, productId: string) {
+  async function handleDeleteSession() {
     if (!session) return;
-    await equivalencesRepo.confirm(session.supplier_id, row.item.supplier_code, productId);
-    await priceListItemsRepo.update({
-      ...row.item,
-      matched_product_id: productId,
-      match_state: "safe",
-      match_level: "equivalence",
-    });
-    setSelected(null);
-    load();
-  }
-
-  async function rejectMatch(row: ExportRow) {
-    if (!session || !row.item.matched_product_id) return;
-    await equivalencesRepo.reject(session.supplier_id, row.item.supplier_code, row.item.matched_product_id);
-    await priceListItemsRepo.update({
-      ...row.item,
-      matched_product_id: null,
-      match_state: "not_found",
-      match_level: "none",
-      match_score: null,
-    });
-    setSelected(null);
-    load();
+    if (!window.confirm("¿Eliminar esta comparación? Se borra de forma permanente, junto con todos sus resultados.")) return;
+    await comparisonSessionsRepo.remove(session.id);
+    navigate("/history", { replace: true });
   }
 
   if (loading) return <p className="text-sm text-steel-600">Cargando...</p>;
@@ -135,6 +173,14 @@ export default function ResultsPage() {
           </h1>
         </div>
         <div className="flex gap-2">
+          {pendingReviewCount > 0 && (
+            <Link
+              to={`/comparisons/${session.id}/review`}
+              className="rounded bg-amber-400 px-3 py-2 text-sm font-semibold text-white hover:bg-amber-600"
+            >
+              Revisar pendientes ({pendingReviewCount})
+            </Link>
+          )}
           <button
             onClick={() => exportAllResults(rows, `pricecore-resultados-${session.id.slice(0, 8)}.xlsx`)}
             className="rounded border border-steel-200 px-3 py-2 text-sm font-medium text-steel-600 hover:bg-steel-50"
@@ -147,14 +193,21 @@ export default function ResultsPage() {
           >
             Exportar solo aprobados
           </button>
+          <button
+            onClick={handleDeleteSession}
+            className="rounded border border-danger-500 px-3 py-2 text-sm font-medium text-danger-500 hover:bg-danger-50"
+          >
+            Eliminar
+          </button>
         </div>
       </div>
 
-      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
         <MiniStat label="Analizados" value={session.total_items} />
         <MiniStat label="Seguros" value={session.safe_matches} tone="text-success-500" />
         <MiniStat label="Revisar" value={session.review_items} tone="text-amber-600" />
         <MiniStat label="No encontrados" value={session.not_found_items} tone="text-danger-500" />
+        <MiniStat label="Discontinuados" value={session.discontinued_items} tone="text-steel-600" />
       </div>
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -170,13 +223,31 @@ export default function ResultsPage() {
             {f.label}
           </button>
         ))}
+        <select
+          value={sort}
+          onChange={(e) => setSort(e.target.value as SortKey)}
+          className="ml-auto rounded border border-steel-200 px-2 py-1.5 text-xs text-steel-600 focus:border-teal-500"
+        >
+          {SORT_OPTIONS.map((o) => (
+            <option key={o.key} value={o.key}>
+              {o.label}
+            </option>
+          ))}
+        </select>
         <input
           placeholder="Buscar código o descripción..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="ml-auto rounded border border-steel-200 px-3 py-1.5 text-sm focus:border-teal-500"
+          className="rounded border border-steel-200 px-3 py-1.5 text-sm focus:border-teal-500"
         />
       </div>
+
+      {(filter === "increased" || filter === "decreased") && (
+        <p className="mb-3 text-xs text-steel-300">
+          Mostrando sólo cambios ya aprobados o con match confirmado — los pendientes de revisión no cuentan acá
+          todavía.
+        </p>
+      )}
 
       {selectedIds.size > 0 && (
         <div className="mb-3 flex items-center gap-3 rounded bg-teal-50 px-4 py-2 text-sm">
@@ -278,14 +349,25 @@ export default function ResultsPage() {
 
       {selected && (
         <ProductDrawer
+          session={session}
           row={selected}
           onClose={() => setSelected(null)}
-          onConfirmMatch={confirmMatch}
-          onRejectMatch={rejectMatch}
+          onResolved={() => {
+            setSelected(null);
+            load();
+          }}
         />
       )}
     </div>
   );
+}
+
+function priceOf(row: ExportRow): number {
+  if (row.change) return row.change.final_new_price ?? row.change.new_price;
+  return row.item.parsed_price ?? -Infinity;
+}
+function nameOf(row: ExportRow): string {
+  return row.product?.description ?? row.item.supplier_description;
 }
 
 function MiniStat({ label, value, tone }: { label: string; value: number; tone?: string }) {
@@ -298,17 +380,17 @@ function MiniStat({ label, value, tone }: { label: string; value: number; tone?:
 }
 
 function ProductDrawer({
+  session,
   row,
   onClose,
-  onConfirmMatch,
-  onRejectMatch,
+  onResolved,
 }: {
+  session: ComparisonSession;
   row: ExportRow;
   onClose: () => void;
-  onConfirmMatch: (row: ExportRow, productId: string) => void;
-  onRejectMatch: (row: ExportRow) => void;
+  onResolved: () => void;
 }) {
-  const needsReview = row.item.match_state === "review" || row.item.match_state === "presentation_diff";
+  const needsResolution = row.item.match_state !== "safe";
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-ink/20" onClick={onClose}>
       <div className="h-full w-full max-w-md overflow-y-auto bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -347,27 +429,8 @@ function ProductDrawer({
           </Section>
         )}
 
-        {needsReview && row.item.matched_product_id && (
-          <div className="mt-2 space-y-2 rounded bg-steel-50 p-3">
-            <p className="text-xs text-steel-600">
-              ¿Es este el producto correcto? Tu decisión se guarda en el diccionario de equivalencias y se aplica
-              automáticamente la próxima vez que aparezca este código de proveedor.
-            </p>
-            <div className="flex gap-2">
-              <button
-                onClick={() => onConfirmMatch(row, row.item.matched_product_id!)}
-                className="flex-1 rounded bg-success-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-success-500/90"
-              >
-                Sí, es el mismo producto
-              </button>
-              <button
-                onClick={() => onRejectMatch(row)}
-                className="flex-1 rounded bg-danger-50 px-3 py-1.5 text-xs font-semibold text-danger-500 hover:bg-danger-500 hover:text-white"
-              >
-                No, son distintos
-              </button>
-            </div>
-          </div>
+        {needsResolution && (
+          <MatchResolutionPanel session={session} item={row.item} suggestedProduct={row.product} onResolved={onResolved} />
         )}
       </div>
     </div>
@@ -400,6 +463,8 @@ function matchLevelLabel(level: PriceListItem["match_level"]): string {
       return "Código normalizado";
     case "equivalence":
       return "Equivalencia histórica";
+    case "code_family":
+      return "Familia de código (otra presentación)";
     case "description":
       return "Descripción (fuzzy)";
     default:
