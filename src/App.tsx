@@ -8,6 +8,7 @@ import ReviewQueue from "@/features/comparisons/ReviewQueue";
 import HistoryPage from "@/features/comparisons/HistoryPage";
 import EquivalencesPage from "@/features/equivalences/EquivalencesPage";
 import SettingsPage from "@/features/settings/SettingsPage";
+import CatalogPage from "@/features/catalog/CatalogPage";
 
 export default function App() {
   return (
@@ -15,6 +16,7 @@ export default function App() {
       <AppShell>
         <Routes>
           <Route path="/" element={<DashboardPage />} />
+          <Route path="/catalog" element={<CatalogPage />} />
           <Route path="/suppliers" element={<SuppliersPage />} />
           <Route path="/comparisons/new" element={<NewComparisonWizard />} />
           <Route path="/comparisons/:sessionId" element={<ResultsPage />} />

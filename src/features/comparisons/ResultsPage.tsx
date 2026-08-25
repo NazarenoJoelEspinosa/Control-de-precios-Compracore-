@@ -56,7 +56,6 @@ export default function ResultsPage() {
   const [sort, setSort] = useState<SortKey>("none");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<ExportRow | null>(null);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -138,18 +137,6 @@ export default function ResultsPage() {
     if (!row.change) return;
     const updated: PriceChange = { ...row.change, status, decided_at: new Date().toISOString() };
     await priceChangesRepo.update(updated);
-    load();
-  }
-
-  async function bulkApprove() {
-    if (selectedIds.size === 0) return;
-    const toUpdate = rows
-      .filter((r) => selectedIds.has(r.item.id) && r.change)
-      .map((r) => ({ ...r.change!, status: "approved" as const, decided_at: new Date().toISOString() }));
-    if (toUpdate.length === 0) return;
-    if (!window.confirm(`¿Aprobar ${toUpdate.length} cambios de precio?`)) return;
-    await priceChangesRepo.updateMany(toUpdate);
-    setSelectedIds(new Set());
     load();
   }
 
@@ -249,18 +236,6 @@ export default function ResultsPage() {
         </p>
       )}
 
-      {selectedIds.size > 0 && (
-        <div className="mb-3 flex items-center gap-3 rounded bg-teal-50 px-4 py-2 text-sm">
-          <span className="text-teal-600">{selectedIds.size} seleccionados</span>
-          <button onClick={bulkApprove} className="rounded bg-teal-500 px-3 py-1 text-xs font-semibold text-white hover:bg-teal-600">
-            Aprobar seleccionados
-          </button>
-          <button onClick={() => setSelectedIds(new Set())} className="text-xs text-steel-600 hover:text-ink">
-            Limpiar selección
-          </button>
-        </div>
-      )}
-
       <div className="panel overflow-hidden">
         <table className="w-full text-sm">
           <thead className="border-b border-steel-100 bg-steel-50 text-left text-xs font-medium text-steel-600">
@@ -279,20 +254,7 @@ export default function ResultsPage() {
           <tbody className="divide-y divide-steel-100">
             {filtered.map((row) => (
               <tr key={row.item.id} className="hover:bg-steel-50">
-                <td className="px-3 py-2">
-                  {row.change && (
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.has(row.item.id)}
-                      onChange={(e) => {
-                        const next = new Set(selectedIds);
-                        if (e.target.checked) next.add(row.item.id);
-                        else next.delete(row.item.id);
-                        setSelectedIds(next);
-                      }}
-                    />
-                  )}
-                </td>
+                <td className="px-3 py-2"></td>
                 <td className="max-w-xs truncate px-3 py-2 text-ink">
                   {row.product?.description ?? row.item.supplier_description}
                 </td>
@@ -314,21 +276,21 @@ export default function ResultsPage() {
                 </td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex justify-end gap-1">
-                    {row.change && row.change.status === "pending" && (
-                      <>
-                        <button
-                          onClick={() => decide(row, "approved")}
-                          className="rounded bg-success-50 px-2 py-1 text-xs font-medium text-success-500 hover:bg-success-500 hover:text-white"
-                        >
-                          Aprobar
-                        </button>
-                        <button
-                          onClick={() => decide(row, "rejected")}
-                          className="rounded bg-danger-50 px-2 py-1 text-xs font-medium text-danger-500 hover:bg-danger-500 hover:text-white"
-                        >
-                          Rechazar
-                        </button>
-                      </>
+                    {row.change && row.change.status === "approved" && (
+                      <button
+                        onClick={() => decide(row, "rejected")}
+                        className="rounded bg-danger-50 px-2 py-1 text-xs font-medium text-danger-500 hover:bg-danger-500 hover:text-white"
+                      >
+                        Rechazar
+                      </button>
+                    )}
+                    {row.change && row.change.status === "rejected" && (
+                      <button
+                        onClick={() => decide(row, "approved")}
+                        className="rounded bg-steel-100 px-2 py-1 text-xs font-medium text-steel-600 hover:bg-steel-200"
+                      >
+                        Reincluir
+                      </button>
                     )}
                     <button
                       onClick={() => setSelected(row)}

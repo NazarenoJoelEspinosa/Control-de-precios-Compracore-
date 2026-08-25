@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import clsx from "clsx";
 import { priceListItemsRepo, priceListsRepo, productsRepo, suppliersRepo } from "@/lib/db";
 import { runMatchingForPriceList } from "@/lib/runMatching";
@@ -7,13 +7,7 @@ import { parseSpreadsheetFile, type ParsedFile } from "@/lib/fileParsing";
 import { suggestColumnMapping, type ColumnMapping } from "@/lib/columnMapping";
 import type { Supplier } from "@/types/database";
 
-const STEPS = [
-  "Proveedor",
-  "Lista nueva",
-  "Precios actuales",
-  "Confirmar columnas",
-  "Procesar",
-] as const;
+const STEPS = ["Proveedor", "Lista nueva", "Confirmar columnas", "Procesar"] as const;
 
 export default function NewComparisonWizard() {
   const navigate = useNavigate();
@@ -21,12 +15,10 @@ export default function NewComparisonWizard() {
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [supplierId, setSupplierId] = useState<string>("");
+  const [catalogSize, setCatalogSize] = useState<number | null>(null);
 
   const [supplierFile, setSupplierFile] = useState<File | null>(null);
   const [supplierParsed, setSupplierParsed] = useState<ParsedFile | null>(null);
-
-  const [currentFile, setCurrentFile] = useState<File | null>(null);
-  const [currentParsed, setCurrentParsed] = useState<ParsedFile | null>(null);
 
   const [mapping, setMapping] = useState<ColumnMapping>({});
   const [processing, setProcessing] = useState(false);
@@ -34,6 +26,7 @@ export default function NewComparisonWizard() {
 
   useEffect(() => {
     suppliersRepo.list().then((all) => setSuppliers(all.filter((s) => s.active)));
+    productsRepo.list().then((all) => setCatalogSize(all.length));
   }, []);
 
   async function handleSupplierFile(file: File) {
@@ -43,36 +36,11 @@ export default function NewComparisonWizard() {
     setMapping(suggestColumnMapping(parsed.headers));
   }
 
-  async function handleCurrentFile(file: File) {
-    setCurrentFile(file);
-    const parsed = await parseSpreadsheetFile(file);
-    setCurrentParsed(parsed);
-  }
-
   async function runComparison() {
     if (!supplierId || !supplierFile || !supplierParsed) return;
     setProcessing(true);
     setProcessError(null);
     try {
-      // 1. Si se cargó un archivo de precios actuales, actualizar el catálogo interno primero
-      if (currentParsed) {
-        const currentMapping = suggestColumnMapping(currentParsed.headers);
-        for (const row of currentParsed.rows) {
-          const code = String(row[currentMapping.code ?? ""] ?? "").trim();
-          if (!code) continue;
-          await productsRepo.upsertByCode({
-            code,
-            description: String(row[currentMapping.description ?? ""] ?? "").trim(),
-            brand: "",
-            unit: "",
-            currency: "ARS",
-            current_price: Number(String(row[currentMapping.price ?? ""] ?? "0").replace(",", ".")) || 0,
-            active: true,
-          });
-        }
-      }
-
-      // 2. Registrar la lista del proveedor
       const priceList = await priceListsRepo.create({
         supplier_id: supplierId,
         file_name: supplierFile.name,
@@ -81,7 +49,6 @@ export default function NewComparisonWizard() {
         column_mapping: mapping as Record<string, string>,
       });
 
-      // 3. Guardar cada fila
       await priceListItemsRepo.bulkCreate(
         supplierParsed.rows.map((row) => ({
           price_list_id: priceList.id,
@@ -100,7 +67,6 @@ export default function NewComparisonWizard() {
         }))
       );
 
-      // 4. Correr el matching (todo local, en el navegador)
       const sessionId = await runMatchingForPriceList(priceList.id, supplierId);
       navigate(`/comparisons/${sessionId}`);
     } catch (err) {
@@ -114,6 +80,15 @@ export default function NewComparisonWizard() {
     <div className="mx-auto max-w-3xl">
       <p className="eyebrow">Asistente</p>
       <h1 className="mb-6 font-display text-2xl font-semibold text-ink">Nueva comparación</h1>
+
+      {catalogSize === 0 && (
+        <div className="mb-4 rounded border border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-600">
+          Todavía no cargaste tu catálogo — sin eso, todo va a salir como "no encontrado".{" "}
+          <Link to="/catalog" className="font-semibold underline">
+            Cargarlo ahora
+          </Link>
+        </div>
+      )}
 
       <ol className="mb-8 flex items-center gap-2">
         {STEPS.map((label, idx) => (
@@ -136,18 +111,11 @@ export default function NewComparisonWizard() {
 
       <div className="panel p-6">
         {step === 0 && (
-          <StepSupplier
-            suppliers={suppliers}
-            value={supplierId}
-            onChange={setSupplierId}
-            onNext={() => setStep(1)}
-          />
+          <StepSupplier suppliers={suppliers} value={supplierId} onChange={setSupplierId} onNext={() => setStep(1)} />
         )}
 
         {step === 1 && (
           <StepUpload
-            title="Cargar lista nueva del proveedor"
-            help="XLSX, XLS o CSV. Detectamos automáticamente el formato y la fila de encabezado."
             file={supplierFile}
             onFile={handleSupplierFile}
             onBack={() => setStep(0)}
@@ -156,33 +124,21 @@ export default function NewComparisonWizard() {
           />
         )}
 
-        {step === 2 && (
-          <StepUpload
-            title="Cargar precios actuales (opcional)"
-            help="Exportación de tu sistema: código, descripción, precio. Si ya cargaste el catálogo antes, podés saltear este paso."
-            file={currentFile}
-            onFile={handleCurrentFile}
-            onBack={() => setStep(1)}
-            onNext={() => setStep(3)}
-            skippable
-          />
-        )}
-
-        {step === 3 && supplierParsed && (
+        {step === 2 && supplierParsed && (
           <StepMapping
             headers={supplierParsed.headers}
             mapping={mapping}
             onChange={setMapping}
-            onBack={() => setStep(2)}
-            onNext={() => setStep(4)}
+            onBack={() => setStep(1)}
+            onNext={() => setStep(3)}
           />
         )}
 
-        {step === 4 && (
+        {step === 3 && (
           <StepProcess
             processing={processing}
             error={processError}
-            onBack={() => setStep(3)}
+            onBack={() => setStep(2)}
             onRun={runComparison}
             itemCount={supplierParsed?.rows.length ?? 0}
           />
@@ -241,28 +197,24 @@ function StepSupplier({
 }
 
 function StepUpload({
-  title,
-  help,
   file,
   onFile,
   onBack,
   onNext,
   nextDisabled,
-  skippable,
 }: {
-  title: string;
-  help: string;
   file: File | null;
   onFile: (f: File) => void;
   onBack: () => void;
   onNext: () => void;
   nextDisabled?: boolean;
-  skippable?: boolean;
 }) {
   return (
     <div>
-      <h2 className="mb-1 font-display text-lg font-semibold text-ink">{title}</h2>
-      <p className="mb-4 text-sm text-steel-600">{help}</p>
+      <h2 className="mb-1 font-display text-lg font-semibold text-ink">Paso 2 — Cargar lista nueva del proveedor</h2>
+      <p className="mb-4 text-sm text-steel-600">
+        XLSX, XLS o CSV. Detectamos automáticamente el formato y la fila de encabezado.
+      </p>
       <label className="flex cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-steel-200 px-6 py-10 text-center hover:border-teal-500">
         <input
           type="file"
@@ -281,11 +233,11 @@ function StepUpload({
           Atrás
         </button>
         <button
-          disabled={!skippable && nextDisabled}
+          disabled={nextDisabled}
           onClick={onNext}
           className="rounded bg-teal-500 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-600 disabled:opacity-40"
         >
-          {skippable && !file ? "Saltear" : "Continuar"}
+          Continuar
         </button>
       </div>
     </div>
@@ -318,7 +270,7 @@ function StepMapping({
   const requiredOk = mapping.code && mapping.description && mapping.price;
   return (
     <div>
-      <h2 className="mb-1 font-display text-lg font-semibold text-ink">Paso 4 — Confirmar columnas</h2>
+      <h2 className="mb-1 font-display text-lg font-semibold text-ink">Paso 3 — Confirmar columnas</h2>
       <p className="mb-4 text-sm text-steel-600">
         Detectamos esto automáticamente. Revisá y corregí si hace falta antes de procesar.
       </p>
@@ -380,10 +332,10 @@ function StepProcess({
 }) {
   return (
     <div>
-      <h2 className="mb-1 font-display text-lg font-semibold text-ink">Paso 5 — Procesar</h2>
+      <h2 className="mb-1 font-display text-lg font-semibold text-ink">Paso 4 — Procesar</h2>
       <p className="mb-4 text-sm text-steel-600">
         Vamos a comparar <span className="mono-num font-medium text-ink">{itemCount}</span> productos contra tu
-        catálogo. Corre acá mismo, en tu navegador — no se sube a ningún lado.
+        catálogo guardado. Corre acá mismo, en tu navegador.
       </p>
       {error && <p className="mb-4 rounded bg-danger-50 px-3 py-2 text-sm text-danger-500">{error}</p>}
       <div className="flex justify-between">

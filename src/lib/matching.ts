@@ -280,17 +280,30 @@ function buildResult(
   thresholds: typeof DEFAULT_THRESHOLDS,
   otherCandidates: CandidateScore[]
 ): MatchResult {
-  const alert = presentationAlert(
-    product.description,
-    product.unit ?? "",
-    item.supplier_description,
-    item.supplier_unit ?? ""
-  );
+  // Un código exacto/normalizado o una equivalencia ya confirmada por una
+  // persona es la señal más fuerte que existe — es el mismo producto, punto.
+  // No tiene sentido volver a dudar por una heurística de texto sobre la
+  // presentación (que puede tener falsos positivos). Esa heurística sólo se
+  // aplica cuando el match viene de descripción o de "familia de código",
+  // que son señales más débiles y sí necesitan ese chequeo extra.
+  const strongCodeSignal = level === "exact_code" || level === "normalized_code" || level === "equivalence";
 
   let state: MatchState;
-  if (alert.reason) {
+  let presentationReason = "";
+
+  if (!strongCodeSignal) {
+    const alert = presentationAlert(
+      product.description,
+      product.unit ?? "",
+      item.supplier_description,
+      item.supplier_unit ?? ""
+    );
+    presentationReason = alert.reason;
+  }
+
+  if (presentationReason) {
     state = "presentation_diff";
-  } else if (level === "exact_code" || level === "equivalence" || score >= thresholds.safeMin) {
+  } else if (strongCodeSignal || score >= thresholds.safeMin) {
     state = "safe";
   } else {
     state = "review";
@@ -301,7 +314,7 @@ function buildResult(
     matchLevel: level,
     matchScore: score,
     matchState: state,
-    presentationReason: alert.reason,
+    presentationReason,
     candidates: [{ product, score }, ...otherCandidates],
   };
 }

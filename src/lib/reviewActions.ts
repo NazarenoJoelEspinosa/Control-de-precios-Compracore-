@@ -79,7 +79,7 @@ export async function confirmMatch(session: ComparisonSession, item: PriceListIt
             new_currency: product.currency,
             diff_absolute: diff,
             diff_percent: product.current_price ? Math.round((diff / product.current_price) * 10000) / 100 : null,
-            status: "pending",
+            status: "approved",
             decided_at: null,
           },
         ]);

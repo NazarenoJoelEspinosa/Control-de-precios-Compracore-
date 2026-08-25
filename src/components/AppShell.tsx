@@ -6,6 +6,7 @@ import { exportBackup, downloadBackup, readBackupFile, importBackup } from "@/li
 const NAV_ITEMS = [
   { to: "/", label: "Dashboard" },
   { to: "/comparisons/new", label: "Nueva comparación" },
+  { to: "/catalog", label: "Catálogo" },
   { to: "/history", label: "Historial" },
   { to: "/suppliers", label: "Proveedores" },
   { to: "/equivalences", label: "Diccionario" },

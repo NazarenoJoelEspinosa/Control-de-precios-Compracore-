@@ -16,9 +16,12 @@ Abrí `http://localhost:5173`. Sin variables de entorno, sin cuenta.
 ## Qué hay en esta versión
 
 ### Flujo principal
+- Tu **catálogo de productos** vive en una sección propia (`Catálogo`) — lo cargás una vez (importando un archivo o agregando productos a mano) y queda guardado en el navegador. Las comparaciones lo usan automáticamente; no hace falta volver a subirlo cada vez.
 - Proveedores con configuración de IVA/moneda.
-- Wizard de 5 pasos para cargar una lista nueva y (opcionalmente) los precios actuales.
+- Wizard de 4 pasos para cargar sólo la lista nueva del proveedor y compararla contra tu catálogo ya guardado.
 - Matching en varios niveles: código exacto → código normalizado → equivalencia histórica confirmada → **familia de código** → descripción (fuzzy).
+- Un match por código exacto o normalizado, o una equivalencia ya confirmada, se considera definitivo — no se vuelve a poner en duda por una heurística de texto sobre la presentación.
+- Los cambios de precio quedan **aprobados automáticamente** en cuanto el match es confiable; sólo hace falta actuar si querés **rechazar** alguno puntual (o reincluirlo después).
 - Exportación a Excel (todo, o solo los cambios aprobados).
 - Backup manual (exportar/importar `.json` completo) desde la barra lateral.
 

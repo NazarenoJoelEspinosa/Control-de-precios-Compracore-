@@ -115,6 +115,20 @@ describe("matchItem — flujo completo", () => {
     expect(result.candidates).toHaveLength(1);
   });
 
+  it("código exacto queda 'safe' aunque la descripción parezca sugerir otra presentación (el código manda)", () => {
+    const products: ProductForMatch[] = [
+      { id: "1", code: "7001", description: "Tornillo 8x1 x100", unit: "Caja", current_price: 1800, currency: "ARS" },
+    ];
+    // Misma descripción en apariencia de "otra cantidad", pero el CÓDIGO del
+    // proveedor es idéntico al interno — no debería dudar de esto.
+    const result = matchItem(
+      "sup1",
+      { supplier_code: "7001", supplier_description: "Tornillo 8x1 x500", supplier_unit: "Caja" },
+      buildDeps(products)
+    );
+    expect(result.matchState).toBe("safe");
+  });
+
   it("detecta presentación distinta por familia de código (mismo tornillo, otro pack)", () => {
     const products: ProductForMatch[] = [
       { id: "1", code: "TOR8X1X100", description: "Tornillo autoperforante 8x1 x100", unit: "Caja", current_price: 1800, currency: "ARS" },
