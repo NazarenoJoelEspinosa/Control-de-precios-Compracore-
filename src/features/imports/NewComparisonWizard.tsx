@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import clsx from "clsx";
-import { priceListItemsRepo, priceListsRepo, productsRepo, suppliersRepo } from "@/lib/db";
+import { priceListItemsRepo, priceListsRepo, productsRepo, supplierColumnConfigRepo, suppliersRepo } from "@/lib/db";
 import { runMatchingForPriceList } from "@/lib/runMatching";
 import { parseSpreadsheetFile, type ParsedFile } from "@/lib/fileParsing";
 import { suggestColumnMapping, type ColumnMapping } from "@/lib/columnMapping";
@@ -21,6 +21,7 @@ export default function NewComparisonWizard() {
   const [supplierParsed, setSupplierParsed] = useState<ParsedFile | null>(null);
 
   const [mapping, setMapping] = useState<ColumnMapping>({});
+  const [mappingRemembered, setMappingRemembered] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [processError, setProcessError] = useState<string | null>(null);
 
@@ -33,7 +34,33 @@ export default function NewComparisonWizard() {
     setSupplierFile(file);
     const parsed = await parseSpreadsheetFile(file);
     setSupplierParsed(parsed);
-    setMapping(suggestColumnMapping(parsed.headers));
+
+    const suggested = suggestColumnMapping(parsed.headers);
+    const saved = await supplierColumnConfigRepo.get(supplierId);
+    if (saved) {
+      // Sólo usamos el mapeo guardado si las columnas que recuerda todavía
+      // existen en este archivo — si el proveedor cambió el formato, mejor
+      // volver a sugerir en vez de mapear a una columna que ya no está.
+      const savedMapping: ColumnMapping = {
+        code: saved.code_column ?? undefined,
+        description: saved.description_column ?? undefined,
+        price: saved.price_column ?? undefined,
+        unit: saved.unit_column ?? undefined,
+        brand: saved.brand_column ?? undefined,
+        ean: saved.ean_column ?? undefined,
+        currency: saved.currency_column ?? undefined,
+      };
+      const stillValid = [savedMapping.code, savedMapping.description, savedMapping.price].every(
+        (col) => !col || parsed.headers.includes(col)
+      );
+      if (stillValid && savedMapping.code && savedMapping.description && savedMapping.price) {
+        setMapping(savedMapping);
+        setMappingRemembered(true);
+        return;
+      }
+    }
+    setMapping(suggested);
+    setMappingRemembered(false);
   }
 
   async function runComparison() {
@@ -41,6 +68,16 @@ export default function NewComparisonWizard() {
     setProcessing(true);
     setProcessError(null);
     try {
+      await supplierColumnConfigRepo.save(supplierId, {
+        code_column: mapping.code ?? null,
+        description_column: mapping.description ?? null,
+        price_column: mapping.price ?? null,
+        unit_column: mapping.unit ?? null,
+        brand_column: mapping.brand ?? null,
+        ean_column: mapping.ean ?? null,
+        currency_column: mapping.currency ?? null,
+      });
+
       const priceList = await priceListsRepo.create({
         supplier_id: supplierId,
         file_name: supplierFile.name,
@@ -128,7 +165,11 @@ export default function NewComparisonWizard() {
           <StepMapping
             headers={supplierParsed.headers}
             mapping={mapping}
-            onChange={setMapping}
+            remembered={mappingRemembered}
+            onChange={(m) => {
+              setMapping(m);
+              setMappingRemembered(false); // si lo toca a mano, ya no es "el recordado tal cual"
+            }}
             onBack={() => setStep(1)}
             onNext={() => setStep(3)}
           />
@@ -257,12 +298,14 @@ const FIELD_LABELS: Record<keyof ColumnMapping, string> = {
 function StepMapping({
   headers,
   mapping,
+  remembered,
   onChange,
   onBack,
   onNext,
 }: {
   headers: string[];
   mapping: ColumnMapping;
+  remembered: boolean;
   onChange: (m: ColumnMapping) => void;
   onBack: () => void;
   onNext: () => void;
@@ -272,7 +315,9 @@ function StepMapping({
     <div>
       <h2 className="mb-1 font-display text-lg font-semibold text-ink">Paso 3 — Confirmar columnas</h2>
       <p className="mb-4 text-sm text-steel-600">
-        Detectamos esto automáticamente. Revisá y corregí si hace falta antes de procesar.
+        {remembered
+          ? "Reconocimos este formato de este proveedor y ya completamos el mapeo que usaste la última vez. Revisá que siga siendo correcto."
+          : "Detectamos esto automáticamente. Revisá y corregí si hace falta antes de procesar."}
       </p>
       <div className="space-y-3">
         {(Object.keys(FIELD_LABELS) as (keyof ColumnMapping)[]).map((field) => (

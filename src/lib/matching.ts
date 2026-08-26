@@ -91,7 +91,17 @@ export function scoreDescription(
   const gramBase = Math.max(unionSize(queryGrams, candidateTrigramSet), 1);
   const trigramScore = gramOverlap / gramBase;
 
-  const seqScore = sequenceRatio(normalizeText(queryText).toLowerCase(), candidateText.toLowerCase());
+  // La comparación de secuencia completa (tabla letra a letra) es la parte
+  // más cara de todo el cálculo. Si el texto no comparte ni una palabra ni
+  // un trigrama, el resultado final va a ser bajo de cualquier manera —
+  // no vale la pena pagar ese costo. Con catálogos grandes, la gran mayoría
+  // de los pares ítem×producto no tienen ninguna relación, así que este
+  // atajo es lo que hace que miles de ítems se procesen en segundos y no en
+  // minutos.
+  let seqScore = 0;
+  if (tokenOverlap > 0 || gramOverlap > 0) {
+    seqScore = sequenceRatio(normalizeText(queryText).toLowerCase().slice(0, 100), candidateText.toLowerCase().slice(0, 100));
+  }
 
   const raw =
     tokenScore * 0.35 + trigramScore * 0.25 + seqScore * 0.15 + containmentBonus + numericBonus;
@@ -126,13 +136,21 @@ function unionSize<T>(a: Set<T>, b: Set<T>): number {
 }
 
 /** Precalcula tokens/trigramas de un producto — llamar una vez por producto, no por comparación. */
-export function buildProductIndexEntry(product: ProductForMatch) {
+export interface ProductIndexEntry {
+  product: ProductForMatch;
+  text: string;
+  tokenSet: Set<string>;
+  trigramSet: Set<string>;
+  normalizedCode: string;
+}
+export function buildProductIndexEntry(product: ProductForMatch): ProductIndexEntry {
   const text = [product.description, product.brand ?? "", product.unit ?? ""].filter(Boolean).join(" ");
   return {
     product,
     text,
     tokenSet: new Set(tokenize(text)),
     trigramSet: trigrams(text),
+    normalizedCode: normalizeCodeForMatch(product.code),
   };
 }
 
@@ -156,8 +174,13 @@ export interface MatchDeps {
   rejectedEquivalences: Set<string>;
   /** productos completos por id, para armar candidatos de nivel 4 */
   productsById: Map<string, ProductForMatch>;
-  /** candidatos de descripción ya prefiltrados por pg_trgm (RPC match_candidates) */
-  descriptionCandidates: ProductForMatch[];
+  /**
+   * Catálogo ya tokenizado — se calcula UNA sola vez por corrida (no por
+   * ítem) con `buildProductIndexEntry`, porque tokenizar es la parte cara
+   * del matching y con listas grandes (miles de ítems x miles de
+   * productos) recalcularlo por cada ítem es lo que vuelve todo lento.
+   */
+  descriptionIndex: ProductIndexEntry[];
 }
 
 export function matchItem(
@@ -201,10 +224,10 @@ export function matchItem(
   const normalizedItemCode = normalizeCodeForMatch(item.supplier_code);
   let bestFamily: { product: ProductForMatch; similarity: number } | null = null;
   if (normalizedItemCode.length >= 3) {
-    for (const p of deps.descriptionCandidates) {
-      const sim = codeFamilySimilarity(normalizedItemCode, normalizeCodeForMatch(p.code));
+    for (const entry of deps.descriptionIndex) {
+      const sim = codeFamilySimilarity(normalizedItemCode, entry.normalizedCode);
       if (sim >= 0.6 && (!bestFamily || sim > bestFamily.similarity)) {
-        bestFamily = { product: p, similarity: sim };
+        bestFamily = { product: entry.product, similarity: sim };
       }
     }
   }
@@ -234,12 +257,11 @@ export function matchItem(
   const queryText = [item.supplier_description, item.supplier_brand ?? "", item.supplier_unit ?? ""]
     .filter(Boolean)
     .join(" ");
-  const scored: CandidateScore[] = deps.descriptionCandidates
-    .filter((p) => !deps.rejectedEquivalences.has(`${equivKey}::${p.id}`))
-    .map((p) => {
-      const entry = buildProductIndexEntry(p);
+  const scored: CandidateScore[] = deps.descriptionIndex
+    .filter((entry) => !deps.rejectedEquivalences.has(`${equivKey}::${entry.product.id}`))
+    .map((entry) => {
       const score = scoreDescription(queryText, entry.text, entry.tokenSet, entry.trigramSet);
-      return { product: p, score };
+      return { product: entry.product, score };
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, 8);

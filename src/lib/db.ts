@@ -16,8 +16,16 @@ interface PriceCoreDB extends DBSchema {
   suppliers: { key: string; value: Supplier };
   supplierColumnConfig: { key: string; value: SupplierColumnConfig; indexes: { bySupplier: string } };
   products: { key: string; value: Product; indexes: { byCode: string } };
-  equivalences: { key: string; value: Equivalence; indexes: { bySupplierCode: [string, string] } };
-  discontinuedCodes: { key: string; value: DiscontinuedCode; indexes: { bySupplierCode: [string, string] } };
+  equivalences: {
+    key: string;
+    value: Equivalence;
+    indexes: { bySupplierCode: [string, string]; bySupplier: string };
+  };
+  discontinuedCodes: {
+    key: string;
+    value: DiscontinuedCode;
+    indexes: { bySupplierCode: [string, string]; bySupplier: string };
+  };
   priceLists: { key: string; value: PriceList };
   priceListItems: { key: string; value: PriceListItem; indexes: { byPriceList: string } };
   comparisonSessions: { key: string; value: ComparisonSession };
@@ -26,17 +34,18 @@ interface PriceCoreDB extends DBSchema {
 }
 
 const DB_NAME = "pricecore";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 let dbPromise: Promise<IDBPDatabase<PriceCoreDB>> | null = null;
 
 export function getDB(): Promise<IDBPDatabase<PriceCoreDB>> {
   if (!dbPromise) {
     dbPromise = openDB<PriceCoreDB>(DB_NAME, DB_VERSION, {
-      upgrade(db) {
+      upgrade(db, _oldVersion, _newVersion, transaction) {
         // Cada creación está guardada por `contains` para que esto funcione
         // tanto en una base nueva (todo se crea de una) como en una que ya
-        // tenía v1 (sólo se agrega lo nuevo, sin tocar lo existente).
+        // tenía una versión anterior (sólo se agrega lo nuevo, sin tocar lo
+        // existente ni perder datos).
         if (!db.objectStoreNames.contains("suppliers")) {
           db.createObjectStore("suppliers", { keyPath: "id" });
         }
@@ -48,14 +57,33 @@ export function getDB(): Promise<IDBPDatabase<PriceCoreDB>> {
           const s = db.createObjectStore("products", { keyPath: "id" });
           s.createIndex("byCode", "code", { unique: true });
         }
-        if (!db.objectStoreNames.contains("equivalences")) {
-          const s = db.createObjectStore("equivalences", { keyPath: "id" });
-          s.createIndex("bySupplierCode", ["supplier_id", "supplier_code"]);
+
+        let equivStore = db.objectStoreNames.contains("equivalences")
+          ? transaction.objectStore("equivalences")
+          : (() => {
+              const s = db.createObjectStore("equivalences", { keyPath: "id" });
+              s.createIndex("bySupplierCode", ["supplier_id", "supplier_code"]);
+              return s;
+            })();
+        // Índice nuevo: traer TODAS las equivalencias de un proveedor de una,
+        // en vez de consultar la base una vez por cada código de la lista
+        // (con 10.000 ítems, eso eran 10.000 consultas — el cuello de botella
+        // principal de matching lento con listas grandes).
+        if (!equivStore.indexNames.contains("bySupplier")) {
+          equivStore.createIndex("bySupplier", "supplier_id");
         }
-        if (!db.objectStoreNames.contains("discontinuedCodes")) {
-          const s = db.createObjectStore("discontinuedCodes", { keyPath: "id" });
-          s.createIndex("bySupplierCode", ["supplier_id", "supplier_code"]);
+
+        let discStore = db.objectStoreNames.contains("discontinuedCodes")
+          ? transaction.objectStore("discontinuedCodes")
+          : (() => {
+              const s = db.createObjectStore("discontinuedCodes", { keyPath: "id" });
+              s.createIndex("bySupplierCode", ["supplier_id", "supplier_code"]);
+              return s;
+            })();
+        if (!discStore.indexNames.contains("bySupplier")) {
+          discStore.createIndex("bySupplier", "supplier_id");
         }
+
         if (!db.objectStoreNames.contains("priceLists")) {
           db.createObjectStore("priceLists", { keyPath: "id" });
         }
@@ -99,6 +127,12 @@ export const discontinuedCodesRepo = {
     const rows = await db.getAllFromIndex("discontinuedCodes", "bySupplierCode", [supplierId, supplierCode]);
     return rows.length > 0;
   },
+  /** Trae TODOS los códigos discontinuados de un proveedor de una — usar
+   * esto antes de un loop, nunca `has` por cada ítem. */
+  async listForSupplier(supplierId: string): Promise<DiscontinuedCode[]> {
+    const db = await getDB();
+    return db.getAllFromIndex("discontinuedCodes", "bySupplier", supplierId);
+  },
   async mark(supplierId: string, supplierCode: string): Promise<void> {
     const db = await getDB();
     const existing = await db.getAllFromIndex("discontinuedCodes", "bySupplierCode", [supplierId, supplierCode]);
@@ -126,6 +160,24 @@ export const settingsRepo = {
   async setThresholds(safeMin: number, reviewMin: number): Promise<void> {
     const db = await getDB();
     await db.put("settings", { id: "thresholds", safe_min: safeMin, review_min: reviewMin });
+  },
+};
+
+export const supplierColumnConfigRepo = {
+  async get(supplierId: string): Promise<SupplierColumnConfig | undefined> {
+    const db = await getDB();
+    const rows = await db.getAllFromIndex("supplierColumnConfig", "bySupplier", supplierId);
+    return rows[0];
+  },
+  /** Guarda (o actualiza) el mapeo confirmado por el usuario para este proveedor. */
+  async save(supplierId: string, mapping: Omit<SupplierColumnConfig, "id" | "supplier_id">): Promise<void> {
+    const db = await getDB();
+    const existing = await this.get(supplierId);
+    await db.put("supplierColumnConfig", {
+      id: existing?.id ?? newId(),
+      supplier_id: supplierId,
+      ...mapping,
+    });
   },
 };
 
@@ -195,6 +247,12 @@ export const equivalencesRepo = {
   async findForSupplierCode(supplierId: string, supplierCode: string): Promise<Equivalence[]> {
     const db = await getDB();
     return db.getAllFromIndex("equivalences", "bySupplierCode", [supplierId, supplierCode]);
+  },
+  /** Trae TODAS las equivalencias de un proveedor de una sola consulta —
+   * usar esto antes de un loop, nunca `findForSupplierCode` por cada ítem. */
+  async listForSupplier(supplierId: string): Promise<Equivalence[]> {
+    const db = await getDB();
+    return db.getAllFromIndex("equivalences", "bySupplier", supplierId);
   },
   async confirm(supplierId: string, supplierCode: string, productId: string): Promise<void> {
     const db = await getDB();

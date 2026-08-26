@@ -102,7 +102,7 @@ describe("matchItem — flujo completo", () => {
       confirmedEquivalences: new Map(),
       rejectedEquivalences: new Set(),
       productsById: new Map(products.map((p) => [p.id, p])),
-      descriptionCandidates: products,
+      descriptionIndex: products.map(buildProductIndexEntry),
     };
   }
 
@@ -155,5 +155,30 @@ describe("matchItem — flujo completo", () => {
     );
     expect(result.matchState).toBe("not_found");
     expect(result.matchedProductId).toBeNull();
+  });
+
+  it("catálogo mediano (800 productos) procesa 300 ítems en tiempo razonable — cubre la regresión de re-tokenizar por ítem", () => {
+    const products: ProductForMatch[] = Array.from({ length: 800 }, (_, i) => ({
+      id: `p${i}`,
+      code: `COD${i}`,
+      description: `Producto de ferretería número ${i} variante ${i % 37}`,
+      current_price: 100 + i,
+      currency: "ARS",
+    }));
+    const deps = buildDeps(products);
+
+    const start = performance.now();
+    for (let i = 0; i < 300; i++) {
+      matchItem("sup1", { supplier_code: `NOEXISTE${i}`, supplier_description: `algo random ${i} sin relación` }, deps);
+    }
+    const elapsed = performance.now() - start;
+    // Nota: las descripciones de este test comparten casi todas las mismas
+    // palabras entre sí a propósito (peor caso: nada se descarta rápido por
+    // el atajo de "cero superposición"). Un catálogo real, con productos de
+    // categorías distintas, es bastante más rápido que esto en la práctica.
+    // El límite generoso de acá es para agarrar una regresión real (por
+    // ejemplo, volver a tokenizar el catálogo por cada ítem), no para medir
+    // rendimiento fino.
+    expect(elapsed).toBeLessThan(8000);
   });
 });

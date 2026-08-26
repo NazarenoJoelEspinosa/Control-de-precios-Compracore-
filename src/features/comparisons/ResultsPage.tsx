@@ -30,10 +30,12 @@ const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "decreased", label: "Bajaron" },
 ];
 
-type SortKey = "none" | "price_desc" | "price_asc" | "score_desc" | "score_asc" | "name_asc" | "name_desc";
+type SortKey = "none" | "price_desc" | "price_asc" | "score_desc" | "score_asc" | "percent_desc" | "percent_asc" | "name_asc" | "name_desc";
 
 const SORT_OPTIONS: { key: SortKey; label: string }[] = [
   { key: "none", label: "Sin ordenar" },
+  { key: "percent_desc", label: "% de cambio: mayor a menor" },
+  { key: "percent_asc", label: "% de cambio: menor a mayor" },
   { key: "price_desc", label: "Precio: mayor a menor" },
   { key: "price_asc", label: "Precio: menor a mayor" },
   { key: "score_desc", label: "Match: mayor a menor" },
@@ -41,6 +43,12 @@ const SORT_OPTIONS: { key: SortKey; label: string }[] = [
   { key: "name_asc", label: "Nombre: A-Z" },
   { key: "name_desc", label: "Nombre: Z-A" },
 ];
+
+/** Los que no tienen valor (null) siempre quedan al final, sea cual sea la dirección. */
+function numericSortValue(v: number | null, ascending: boolean): number {
+  if (v === null) return ascending ? Infinity : -Infinity;
+  return v;
+}
 
 /** Un ítem cuenta como "asociado" (confiable) cuando su match está confirmado, no sólo sugerido. */
 function isAssociated(row: ExportRow): boolean {
@@ -56,6 +64,7 @@ export default function ResultsPage() {
   const [sort, setSort] = useState<SortKey>("none");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<ExportRow | null>(null);
+  const [exporting, setExporting] = useState<"all" | "approved" | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -111,13 +120,17 @@ export default function ResultsPage() {
       result = [...result].sort((a, b) => {
         switch (sort) {
           case "price_desc":
-            return priceOf(b) - priceOf(a);
+            return numericSortValue(priceOf(b), false) - numericSortValue(priceOf(a), false);
           case "price_asc":
-            return priceOf(a) - priceOf(b);
+            return numericSortValue(priceOf(a), true) - numericSortValue(priceOf(b), true);
           case "score_desc":
-            return (b.item.match_score ?? -1) - (a.item.match_score ?? -1);
+            return numericSortValue(b.item.match_score, false) - numericSortValue(a.item.match_score, false);
           case "score_asc":
-            return (a.item.match_score ?? -1) - (b.item.match_score ?? -1);
+            return numericSortValue(a.item.match_score, true) - numericSortValue(b.item.match_score, true);
+          case "percent_desc":
+            return numericSortValue(b.change?.diff_percent ?? null, false) - numericSortValue(a.change?.diff_percent ?? null, false);
+          case "percent_asc":
+            return numericSortValue(a.change?.diff_percent ?? null, true) - numericSortValue(b.change?.diff_percent ?? null, true);
           case "name_asc":
             return nameOf(a).localeCompare(nameOf(b));
           case "name_desc":
@@ -169,16 +182,26 @@ export default function ResultsPage() {
             </Link>
           )}
           <button
-            onClick={() => exportAllResults(rows, `pricecore-resultados-${session.id.slice(0, 8)}.xlsx`)}
-            className="rounded border border-steel-200 px-3 py-2 text-sm font-medium text-steel-600 hover:bg-steel-50"
+            onClick={async () => {
+              setExporting("all");
+              await exportAllResults(rows, `pricecore-resultados-${session.id.slice(0, 8)}.xlsx`);
+              setExporting(null);
+            }}
+            disabled={exporting !== null}
+            className="rounded border border-steel-200 px-3 py-2 text-sm font-medium text-steel-600 hover:bg-steel-50 disabled:opacity-60"
           >
-            Exportar todo
+            {exporting === "all" ? "Generando..." : "Exportar todo"}
           </button>
           <button
-            onClick={() => exportApprovedOnly(rows, `pricecore-aprobados-${session.id.slice(0, 8)}.xlsx`)}
-            className="rounded bg-teal-500 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-600"
+            onClick={async () => {
+              setExporting("approved");
+              await exportApprovedOnly(rows, `pricecore-aprobados-${session.id.slice(0, 8)}.xlsx`);
+              setExporting(null);
+            }}
+            disabled={exporting !== null}
+            className="rounded bg-teal-500 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-600 disabled:opacity-60"
           >
-            Exportar solo aprobados
+            {exporting === "approved" ? "Generando..." : "Exportar solo aprobados"}
           </button>
           <button
             onClick={handleDeleteSession}
@@ -324,9 +347,9 @@ export default function ResultsPage() {
   );
 }
 
-function priceOf(row: ExportRow): number {
+function priceOf(row: ExportRow): number | null {
   if (row.change) return row.change.final_new_price ?? row.change.new_price;
-  return row.item.parsed_price ?? -Infinity;
+  return row.item.parsed_price;
 }
 function nameOf(row: ExportRow): string {
   return row.product?.description ?? row.item.supplier_description;

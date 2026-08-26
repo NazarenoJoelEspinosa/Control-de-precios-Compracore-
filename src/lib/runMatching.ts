@@ -1,5 +1,5 @@
 import { normalizeCodeForMatch, normalizeText, parseDecimal } from "./normalize";
-import { matchItem, type MatchDeps, type ProductForMatch } from "./matching";
+import { buildProductIndexEntry, matchItem, type MatchDeps, type ProductForMatch } from "./matching";
 import {
   comparisonSessionsRepo,
   discontinuedCodesRepo,
@@ -16,11 +16,19 @@ import type { ComparisonSession, PriceListItem, Product } from "@/types/database
  * Corre el pipeline completo de matching para una lista ya cargada. Todo
  * pasa en el navegador — no hay ningún servidor al que llamar.
  *
- * Importante: sólo los ítems que quedan en estado "safe" (match exacto,
- * normalizado, o equivalencia ya confirmada) generan un price_change y
- * cuentan para "subieron/bajaron/sin cambios". Los ítems en revisión NO
- * cuentan todavía — cuando el usuario los confirma (ver reviewActions.ts),
- * ahí sí se crea el cambio de precio y se suman a las estadísticas.
+ * Importante para el rendimiento con listas grandes (miles de ítems): todo
+ * lo que se puede calcular UNA vez para toda la corrida (tokenización del
+ * catálogo, equivalencias y discontinuados del proveedor) se trae de una
+ * sola vez ANTES del loop. Adentro del loop no hay ningún `await` a
+ * IndexedDB ni ninguna re-tokenización — si se cuela un `await` ahí adentro
+ * con 10.000 ítems, cada uno espera su propio viaje a la base y todo se
+ * vuelve exasperantemente lento.
+ *
+ * Sólo los ítems que quedan en estado "safe" (match exacto, normalizado, o
+ * equivalencia ya confirmada) generan un price_change y cuentan para
+ * "subieron/bajaron/sin cambios". Los ítems en revisión NO cuentan todavía
+ * — cuando el usuario los confirma (ver reviewActions.ts), ahí sí se crea
+ * el cambio de precio y se suman a las estadísticas.
  */
 export async function runMatchingForPriceList(priceListId: string, supplierId: string): Promise<string> {
   const items = await priceListItemsRepo.listByPriceList(priceListId);
@@ -38,15 +46,32 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
     productsById.set(p.id, p);
   }
 
-  const equivalencesForSupplier = (
-    await Promise.all(items.map((it) => equivalencesRepo.findForSupplierCode(supplierId, it.supplier_code)))
-  ).flat();
+  // Tokenizar el catálogo es la parte cara del matching — se hace UNA vez
+  // acá, nunca dentro del loop de ítems.
+  const descriptionIndex = activeProducts.map(buildProductIndexEntry);
+
+  // Traer de una sola consulta todo lo que el proveedor tiene aprendido
+  // (equivalencias + discontinuados), en vez de una consulta por ítem.
+  const [equivalencesForSupplier, discontinuedForSupplier] = await Promise.all([
+    equivalencesRepo.listForSupplier(supplierId),
+    discontinuedCodesRepo.listForSupplier(supplierId),
+  ]);
   const confirmedEquivalences = new Map(
     equivalencesForSupplier.filter((e) => e.decision === "confirmed").map((e) => [e.supplier_code, e.product_id])
   );
   const rejectedEquivalences = new Set(
     equivalencesForSupplier.filter((e) => e.decision === "rejected").map((e) => `${e.supplier_code}::${e.product_id}`)
   );
+  const discontinuedCodes = new Set(discontinuedForSupplier.map((d) => d.supplier_code));
+
+  const deps: MatchDeps = {
+    byExactCode,
+    byNormalizedCode,
+    confirmedEquivalences,
+    rejectedEquivalences,
+    productsById,
+    descriptionIndex,
+  };
 
   const summary = {
     total_items: 0,
@@ -70,7 +95,7 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
 
     // Códigos ya marcados como discontinuados en una comparación anterior:
     // no volvemos a preguntar, ni a correr el matching para nada.
-    if (await discontinuedCodesRepo.has(supplierId, item.supplier_code)) {
+    if (discontinuedCodes.has(item.supplier_code)) {
       summary.discontinued_items++;
       updatedItems.push({
         ...item,
@@ -91,15 +116,6 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
     } catch {
       parseError = "No se pudo interpretar el precio";
     }
-
-    const deps: MatchDeps = {
-      byExactCode,
-      byNormalizedCode,
-      confirmedEquivalences,
-      rejectedEquivalences,
-      productsById,
-      descriptionCandidates: activeProducts,
-    };
 
     const result = matchItem(
       supplierId,

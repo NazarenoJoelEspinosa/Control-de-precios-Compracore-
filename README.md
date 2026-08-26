@@ -18,11 +18,11 @@ Abrí `http://localhost:5173`. Sin variables de entorno, sin cuenta.
 ### Flujo principal
 - Tu **catálogo de productos** vive en una sección propia (`Catálogo`) — lo cargás una vez (importando un archivo o agregando productos a mano) y queda guardado en el navegador. Las comparaciones lo usan automáticamente; no hace falta volver a subirlo cada vez.
 - Proveedores con configuración de IVA/moneda.
-- Wizard de 4 pasos para cargar sólo la lista nueva del proveedor y compararla contra tu catálogo ya guardado.
+- Wizard de 4 pasos para cargar sólo la lista nueva del proveedor y compararla contra tu catálogo ya guardado. **Recuerda el mapeo de columnas por proveedor** — si ya cargaste una lista de ese proveedor antes, te lo pre-completa.
 - Matching en varios niveles: código exacto → código normalizado → equivalencia histórica confirmada → **familia de código** → descripción (fuzzy).
 - Un match por código exacto o normalizado, o una equivalencia ya confirmada, se considera definitivo — no se vuelve a poner en duda por una heurística de texto sobre la presentación.
 - Los cambios de precio quedan **aprobados automáticamente** en cuanto el match es confiable; sólo hace falta actuar si querés **rechazar** alguno puntual (o reincluirlo después).
-- Exportación a Excel (todo, o solo los cambios aprobados).
+- **Exportación a Excel con formato real** (todo, o solo los cambios aprobados): encabezado con color, formato de moneda/porcentaje, colores por estado igual que en pantalla, y **ambas descripciones** (proveedor e interna) en columnas separadas para ocultar/borrar la que no necesites al imprimir.
 - Backup manual (exportar/importar `.json` completo) desde la barra lateral.
 
 ### Umbrales configurables
@@ -40,13 +40,21 @@ Desde el botón **"Revisar pendientes"** en cada comparación, se abre una cola 
 - **No existe / discontinuado** → lo marca como tal; la próxima lista del mismo proveedor va a saltear ese código automáticamente sin volver a preguntar.
 - **Dejar para después** → lo saca de la ronda actual sin decidir nada; queda disponible para retomar.
 
+Atajos de teclado (cuando no estás escribiendo en el buscador): **Enter** o **Y** = confirmar, **N** = buscar otro, **D** = discontinuado.
+
 Los matches ya "seguros" (código exacto, etc.) nunca entran a este panel ni muestran candidatos alternativos — sólo lo genuinamente dudoso pide tu atención.
 
 ### Resultados
 - Filtros por estado, incluyendo **Discontinuados**.
 - **Subieron / Bajaron** ahora sólo cuentan cambios ya aprobados o con match confirmado — un match dudoso no infla las estadísticas de aumentos.
-- Orden por precio, por score de coincidencia, o alfabético.
+- Orden por precio, score de coincidencia, **porcentaje de cambio**, o alfabético — los ítems sin ese dato siempre quedan al final, sea cual sea la dirección.
 - **Eliminar** una comparación entera (se saca del historial y del dashboard) — también disponible desde el Dashboard y el Historial.
+
+### Diccionario de equivalencias
+Agrupado por proveedor en secciones plegables — cada una muestra sus equivalencias confirmadas y sus códigos discontinuados por separado.
+
+### Rendimiento con listas grandes
+El motor de matching precalcula la tokenización de todo el catálogo **una sola vez por corrida** (no por ítem) y trae de una consulta todo lo que el proveedor tiene aprendido (equivalencias, discontinuados) — con catálogos y listas de varios miles de artículos, esto es la diferencia entre segundos y minutos.
 
 ## Estructura
 
@@ -54,36 +62,37 @@ Los matches ya "seguros" (código exacto, etc.) nunca entran a este panel ni mue
 src/
 ├── components/
 │   ├── AppShell.tsx              # nav + backup
-│   └── MatchResolutionPanel.tsx  # búsqueda manual / confirmar / discontinuar (compartido)
+│   └── MatchResolutionPanel.tsx  # búsqueda manual / confirmar / discontinuar (compartido, con atajos de teclado)
 ├── features/
 │   ├── dashboard/
+│   ├── catalog/                   # tu catálogo de productos (persistente)
 │   ├── suppliers/
-│   ├── imports/                  # wizard de nueva comparación
+│   ├── imports/                  # wizard de nueva comparación (recuerda el mapeo por proveedor)
 │   ├── comparisons/
 │   │   ├── ResultsPage.tsx        # tabla, filtros, orden, export, borrado
 │   │   ├── ReviewQueue.tsx        # panel de revisión tipo Tinder
 │   │   └── HistoryPage.tsx
-│   ├── equivalences/              # diccionario + códigos discontinuados
+│   ├── equivalences/              # diccionario agrupado por proveedor + discontinuados
 │   └── settings/                  # umbrales configurables
 ├── lib/
 │   ├── db.ts               # IndexedDB — todos los repositorios
 │   ├── backup.ts
-│   ├── runMatching.ts       # orquestador del pipeline (corre en el navegador)
+│   ├── runMatching.ts       # orquestador del pipeline (todo precalculado, sin awaits en el loop)
 │   ├── reviewActions.ts     # confirmar / rechazar / discontinuar (lógica compartida)
 │   ├── normalize.ts         # normalización, parseDecimal, presentación, familia de código
-│   ├── matching.ts          # motor de matching por niveles
+│   ├── matching.ts          # motor de matching por niveles (tokenización precalculada)
 │   ├── columnMapping.ts
 │   ├── fileParsing.ts
-│   ├── exportResults.ts
-│   └── __tests__/           # 18 tests — parsing, scoring, familia de código, umbrales
+│   ├── exportResults.ts     # export a Excel con ExcelJS (estilos reales)
+│   └── __tests__/           # 20 tests — parsing, scoring, familia de código, umbrales, rendimiento
 └── types/database.ts
 ```
 
 ## Limitaciones conocidas
 
 - Todo vive en el navegador de esa máquina — el backup `.json` es tu respaldo y tu forma de moverte a otra computadora.
-- El matching corre en el hilo principal (sin Web Worker todavía) — con ~3.000 ítems no debería notarse.
-- `supplier_column_config` existe en el modelo de datos pero el wizard todavía no lo usa para recordar el mapeo de columnas por proveedor entre cargas.
+- El matching corre en el hilo principal (sin Web Worker todavía). Ya está optimizado para no re-tokenizar ni consultar la base por ítem, pero con listas muy grandes (decenas de miles de artículos) un Web Worker con barra de progreso seguiría siendo la siguiente mejora natural.
+- El bundle de la app creció por incluir ExcelJS (necesario para que el Excel exportado tenga estilos reales, algo que la librería anterior no soportaba). Para una herramienta interna que se carga una vez y queda en caché, no debería notarse en el uso diario.
 
 ## Correr los tests
 

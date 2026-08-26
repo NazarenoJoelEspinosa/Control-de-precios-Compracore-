@@ -17,6 +17,7 @@
     "react-router-dom": "^6.26.0",
     "papaparse": "^5.4.1",
     "xlsx": "^0.18.5",
+    "exceljs": "^4.4.0",
     "clsx": "^2.1.1"
   },
   "devDependencies": {

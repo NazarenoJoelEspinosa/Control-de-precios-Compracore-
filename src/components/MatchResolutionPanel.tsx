@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { productsRepo } from "@/lib/db";
 import { confirmMatch, markDiscontinued, rejectSuggestion } from "@/lib/reviewActions";
 import { formatPrice } from "@/lib/normalize";
@@ -53,6 +53,32 @@ export default function MatchResolutionPanel({
     onResolved();
   }
 
+  // Atajos de teclado — sólo cuando hay una sugerencia visible (no mientras
+  // se está escribiendo en el buscador, para no interferir con lo que tipeás).
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      const isTyping = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA";
+      if (isTyping || busy) return;
+      if (!suggestedProduct || searching) return;
+
+      const key = e.key.toLowerCase();
+      if (e.key === "Enter" || key === "y") {
+        e.preventDefault();
+        handleConfirm(suggestedProduct.id);
+      } else if (key === "n") {
+        e.preventDefault();
+        handleReject();
+      } else if (key === "d") {
+        e.preventDefault();
+        handleDiscontinued();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestedProduct, searching, busy]);
+
   return (
     <div className="space-y-3 rounded bg-steel-50 p-3">
       {suggestedProduct && !searching && (
@@ -70,16 +96,17 @@ export default function MatchResolutionPanel({
               onClick={() => handleConfirm(suggestedProduct.id)}
               className="flex-1 rounded bg-success-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-success-500/90 disabled:opacity-60"
             >
-              Sí, es este
+              Sí, es este <span className="opacity-70">(Enter)</span>
             </button>
             <button
               disabled={busy}
               onClick={handleReject}
               className="flex-1 rounded bg-danger-50 px-3 py-1.5 text-xs font-semibold text-danger-500 hover:bg-danger-500 hover:text-white disabled:opacity-60"
             >
-              No, buscar otro
+              No, buscar otro <span className="opacity-70">(N)</span>
             </button>
           </div>
+          <p className="text-center text-xs text-steel-300">Atajos: Enter = sí · N = buscar otro · D = discontinuado</p>
         </>
       )}
 
