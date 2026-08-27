@@ -32,8 +32,13 @@ import type { ComparisonSession, PriceListItem, Product } from "@/types/database
  */
 export async function runMatchingForPriceList(priceListId: string, supplierId: string): Promise<string> {
   const items = await priceListItemsRepo.listByPriceList(priceListId);
-  const allProducts = await productsRepo.list();
-  const activeProducts = allProducts.filter((p) => p.active);
+  // Sólo la carpeta de ESTE proveedor — nunca el catálogo entero. Esto es lo
+  // que evita tanto los choques de código entre proveedores como el costo de
+  // comparar cada ítem contra productos que ni siquiera son de este
+  // proveedor (con catálogos grandes, la mayor parte del tiempo de matching
+  // se iba en comparar contra productos irrelevantes).
+  const supplierProducts = await productsRepo.listBySupplier(supplierId);
+  const activeProducts = supplierProducts.filter((p) => p.active);
   const rawThresholds = await settingsRepo.getThresholds();
   const thresholds = { safeMin: rawThresholds.safe_min, reviewMin: rawThresholds.review_min };
 

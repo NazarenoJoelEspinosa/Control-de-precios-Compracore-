@@ -1,11 +1,96 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { getDB, productsRepo } from "@/lib/db";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { getDB, productsRepo, suppliersRepo, type DuplicateCodeInFile } from "@/lib/db";
 import { parseSpreadsheetFile, type ParsedFile } from "@/lib/fileParsing";
 import { suggestColumnMapping, type ColumnMapping } from "@/lib/columnMapping";
 import { formatPrice, parseDecimal } from "@/lib/normalize";
-import type { Product } from "@/types/database";
+import type { Product, Supplier } from "@/types/database";
 
+/**
+ * El catálogo es una carpeta por proveedor: un mismo código puede existir en
+ * dos proveedores distintos sin chocar, porque nunca se comparan ni se
+ * guardan mezclados. Primero se elige la carpeta (proveedor), después se
+ * trabaja adentro.
+ */
 export default function CatalogPage() {
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [counts, setCounts] = useState<Map<string, number>>(new Map());
+  const [loading, setLoading] = useState(true);
+  const [openSupplierId, setOpenSupplierId] = useState<string | null>(null);
+
+  async function load() {
+    setLoading(true);
+    const [supplierList, allProducts] = await Promise.all([suppliersRepo.list(), productsRepo.list()]);
+    const byCount = new Map<string, number>();
+    for (const p of allProducts) byCount.set(p.supplier_id, (byCount.get(p.supplier_id) ?? 0) + 1);
+    setSuppliers(supplierList.sort((a, b) => a.name.localeCompare(b.name)));
+    setCounts(byCount);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const openSupplier = suppliers.find((s) => s.id === openSupplierId) ?? null;
+
+  if (openSupplier) {
+    return (
+      <SupplierCatalogFolder
+        supplier={openSupplier}
+        onBack={() => {
+          setOpenSupplierId(null);
+          load();
+        }}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <div className="mb-6">
+        <p className="eyebrow">Tu catálogo</p>
+        <h1 className="font-display text-2xl font-semibold text-ink">Productos y precios actuales</h1>
+        <p className="mt-1 text-sm text-steel-600">
+          Una carpeta por proveedor — los códigos sólo se comparan y se guardan dentro de la carpeta de su propio
+          proveedor, así que dos proveedores pueden compartir el mismo código sin pisarse.
+        </p>
+      </div>
+
+      {loading ? (
+        <p className="text-sm text-steel-600">Cargando...</p>
+      ) : suppliers.length === 0 ? (
+        <div className="panel p-8 text-center">
+          <p className="font-display text-lg font-semibold text-ink">Todavía no cargaste proveedores</p>
+          <p className="mt-1 text-sm text-steel-600">
+            Creá un proveedor en la sección Proveedores antes de importar su catálogo.
+          </p>
+        </div>
+      ) : (
+        <div className="panel divide-y divide-steel-100">
+          {suppliers.map((s) => {
+            const count = counts.get(s.id) ?? 0;
+            return (
+              <button
+                key={s.id}
+                onClick={() => setOpenSupplierId(s.id)}
+                className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-steel-50"
+              >
+                <span className="flex items-center gap-2 font-display text-sm font-semibold text-ink">
+                  📁 {s.name}
+                </span>
+                <span className="text-xs text-steel-300">
+                  {count} producto{count !== 1 ? "s" : ""}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SupplierCatalogFolder({ supplier, onBack }: { supplier: Supplier; onBack: () => void }) {
   const [products, setProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -14,14 +99,15 @@ export default function CatalogPage() {
   const [editing, setEditing] = useState<Product | null>(null);
 
   async function load() {
-    const all = await productsRepo.list();
+    const all = await productsRepo.listBySupplier(supplier.id);
     setProducts(all.sort((a, b) => a.description.localeCompare(b.description)));
     setLoading(false);
   }
 
   useEffect(() => {
     load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supplier.id]);
 
   const filtered = products.filter((p) => {
     if (!search) return true;
@@ -31,13 +117,17 @@ export default function CatalogPage() {
 
   return (
     <div>
+      <button onClick={onBack} className="mb-4 text-sm text-steel-600 hover:text-teal-600">
+        ‹ Todos los proveedores
+      </button>
+
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <p className="eyebrow">Tu catálogo</p>
-          <h1 className="font-display text-2xl font-semibold text-ink">Productos y precios actuales</h1>
+          <p className="eyebrow">Carpeta de {supplier.name}</p>
+          <h1 className="font-display text-2xl font-semibold text-ink">Catálogo de {supplier.name}</h1>
           <p className="mt-1 text-sm text-steel-600">
-            Esto es lo que ya tenés cargado — se guarda en este navegador y las comparaciones lo usan
-            automáticamente, sin volver a pedírtelo.
+            Sólo productos de este proveedor. Los códigos acá son únicos dentro de esta carpeta — no chocan con los
+            de otros proveedores.
           </p>
         </div>
         <div className="flex gap-2">
@@ -58,6 +148,7 @@ export default function CatalogPage() {
 
       {showAdd && (
         <AddProductForm
+          supplierId={supplier.id}
           onSaved={() => {
             setShowAdd(false);
             load();
@@ -67,6 +158,7 @@ export default function CatalogPage() {
 
       {showImport && (
         <ImportCatalogForm
+          supplierId={supplier.id}
           onDone={() => {
             setShowImport(false);
             load();
@@ -96,9 +188,9 @@ export default function CatalogPage() {
         <p className="text-sm text-steel-600">Cargando...</p>
       ) : products.length === 0 ? (
         <div className="panel p-8 text-center">
-          <p className="font-display text-lg font-semibold text-ink">Todavía no cargaste tu catálogo</p>
+          <p className="font-display text-lg font-semibold text-ink">Todavía no cargaste el catálogo de {supplier.name}</p>
           <p className="mt-1 text-sm text-steel-600">
-            Importá el archivo con tus productos y precios actuales, o agregalos uno por uno.
+            Importá el archivo con sus productos y precios actuales, o agregalos uno por uno.
           </p>
         </div>
       ) : (
@@ -144,7 +236,7 @@ export default function CatalogPage() {
   );
 }
 
-function AddProductForm({ onSaved }: { onSaved: () => void }) {
+function AddProductForm({ supplierId, onSaved }: { supplierId: string; onSaved: () => void }) {
   const [code, setCode] = useState("");
   const [description, setDescription] = useState("");
   const [price, setPrice] = useState("");
@@ -158,7 +250,7 @@ function AddProductForm({ onSaved }: { onSaved: () => void }) {
     setSaving(true);
     setError(null);
     try {
-      await productsRepo.upsertByCode({
+      await productsRepo.upsertByCode(supplierId, {
         code: code.trim(),
         description: description.trim(),
         brand: "",
@@ -280,28 +372,27 @@ function parsePriceForImport(value: unknown): number {
   }
 }
 
-function ImportCatalogForm({ onDone }: { onDone: () => void }) {
+function ImportCatalogForm({ supplierId, onDone }: { supplierId: string; onDone: () => void }) {
   const [parsed, setParsed] = useState<ParsedFile | null>(null);
   const [mapping, setMapping] = useState<ColumnMapping>({});
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [duplicates, setDuplicates] = useState<DuplicateCodeInFile[] | null>(null);
 
   async function handleFile(file: File) {
     const p = await parseSpreadsheetFile(file);
     setParsed(p);
     setMapping(suggestColumnMapping(p.headers));
+    setDuplicates(null);
   }
 
-  async function handleImport() {
-    if (!parsed) return;
-    setImporting(true);
-    setError(null);
-    try {
-      const products = parsed.rows.flatMap((row) => {
-        const code = String(row[mapping.code ?? ""] ?? "").trim();
-        if (!code) return [];
-
-        return [{
+  const products = useMemo(() => {
+    if (!parsed) return [];
+    return parsed.rows.flatMap((row) => {
+      const code = String(row[mapping.code ?? ""] ?? "").trim();
+      if (!code) return [];
+      return [
+        {
           code,
           description: String(row[mapping.description ?? ""] ?? "").trim(),
           brand: String(row[mapping.brand ?? ""] ?? "").trim(),
@@ -309,11 +400,25 @@ function ImportCatalogForm({ onDone }: { onDone: () => void }) {
           currency: "ARS" as const,
           current_price: parsePriceForImport(row[mapping.price ?? ""]),
           active: true,
-        }];
-      });
+        },
+      ];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsed, mapping.code, mapping.description, mapping.brand, mapping.unit, mapping.price]);
 
-      await productsRepo.bulkUpsertByCode(products);
-      onDone();
+  async function handleImport() {
+    if (!parsed) return;
+    setImporting(true);
+    setError(null);
+    try {
+      const { duplicatesInFile } = await productsRepo.bulkUpsertByCode(supplierId, products);
+      setDuplicates(duplicatesInFile);
+      if (duplicatesInFile.length === 0) {
+        onDone();
+      }
+      // Si hubo duplicados, la importación ya se guardó (con la última fila
+      // de cada código repetido) — dejamos el aviso visible en vez de cerrar
+      // el formulario solo, para que el usuario revise el archivo de origen.
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo importar el archivo.");
     } finally {
@@ -326,8 +431,9 @@ function ImportCatalogForm({ onDone }: { onDone: () => void }) {
   return (
     <div className="panel mb-6 space-y-4 p-5">
       <p className="text-sm text-steel-600">
-        Subí la exportación de tu sistema (código, descripción, precio). Los productos que ya existan por código se
-        actualizan; los que no existan se agregan.
+        Subí la exportación de este proveedor (código, descripción, precio). Los productos que ya existan por código
+        <strong> dentro de esta carpeta</strong> se actualizan; los que no existan se agregan. No afecta el catálogo
+        de otros proveedores.
       </p>
       {!parsed ? (
         <label className="flex cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-steel-200 px-6 py-8 text-center hover:border-teal-500">
@@ -367,13 +473,38 @@ function ImportCatalogForm({ onDone }: { onDone: () => void }) {
             ))}
           </div>
           {error && <p className="text-sm text-danger-500">{error}</p>}
-          <button
-            disabled={!requiredOk || importing}
-            onClick={handleImport}
-            className="rounded bg-teal-500 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-600 disabled:opacity-40"
-          >
-            {importing ? "Importando..." : `Importar ${parsed.rows.length} productos`}
-          </button>
+          {duplicates && duplicates.length > 0 && (
+            <div className="rounded border border-amber-400 bg-amber-50 p-3 text-sm text-amber-600">
+              <p className="font-medium">
+                El archivo tiene {duplicates.length} código{duplicates.length !== 1 ? "s" : ""} repetido
+                {duplicates.length !== 1 ? "s" : ""} — se importó igual, quedándose con la última fila de cada uno:
+              </p>
+              <ul className="mt-1 list-inside list-disc">
+                {duplicates.slice(0, 20).map((d) => (
+                  <li key={d.code} className="mono-num">
+                    {d.code} — aparece {d.count} veces
+                  </li>
+                ))}
+                {duplicates.length > 20 && <li>...y {duplicates.length - 20} más.</li>}
+              </ul>
+              <p className="mt-2">Revisá el archivo de origen si no era lo esperado.</p>
+              <button
+                onClick={onDone}
+                className="mt-3 rounded bg-teal-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-600"
+              >
+                Entendido, listo
+              </button>
+            </div>
+          )}
+          {!duplicates && (
+            <button
+              disabled={!requiredOk || importing}
+              onClick={handleImport}
+              className="rounded bg-teal-500 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-600 disabled:opacity-40"
+            >
+              {importing ? "Importando..." : `Importar ${parsed.rows.length} productos`}
+            </button>
+          )}
         </>
       )}
     </div>

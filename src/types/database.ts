@@ -39,6 +39,10 @@ export interface SupplierColumnConfig {
 
 export interface Product {
   id: string;
+  /** Proveedor "dueño" de este producto — el catálogo es una carpeta por
+   * proveedor, nunca compartido entre proveedores. Un mismo código puede
+   * repetirse entre proveedores distintos sin chocar. */
+  supplier_id: string;
   code: string;
   description: string;
   brand: string;

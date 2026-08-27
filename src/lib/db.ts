@@ -15,7 +15,11 @@ import type {
 interface PriceCoreDB extends DBSchema {
   suppliers: { key: string; value: Supplier };
   supplierColumnConfig: { key: string; value: SupplierColumnConfig; indexes: { bySupplier: string } };
-  products: { key: string; value: Product; indexes: { byCode: string } };
+  products: {
+    key: string;
+    value: Product;
+    indexes: { bySupplierCode: [string, string]; bySupplier: string };
+  };
   equivalences: {
     key: string;
     value: Equivalence;
@@ -34,7 +38,7 @@ interface PriceCoreDB extends DBSchema {
 }
 
 const DB_NAME = "pricecore";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 let dbPromise: Promise<IDBPDatabase<PriceCoreDB>> | null = null;
 
@@ -53,9 +57,19 @@ export function getDB(): Promise<IDBPDatabase<PriceCoreDB>> {
           const s = db.createObjectStore("supplierColumnConfig", { keyPath: "id" });
           s.createIndex("bySupplier", "supplier_id");
         }
-        if (!db.objectStoreNames.contains("products")) {
+        // v4: el catálogo pasa de ser una lista global (código único en TODA
+        // la base, lo que chocaba cuando dos proveedores usaban el mismo
+        // código) a una carpeta por proveedor (código único sólo dentro de
+        // ese proveedor). No hay forma de migrar productos viejos sin
+        // proveedor asignado, así que se recrea el store vacío — el catálogo
+        // se vuelve a importar, ya elegido el proveedor de cada carpeta.
+        if (db.objectStoreNames.contains("products")) {
+          db.deleteObjectStore("products");
+        }
+        {
           const s = db.createObjectStore("products", { keyPath: "id" });
-          s.createIndex("byCode", "code", { unique: true });
+          s.createIndex("bySupplierCode", ["supplier_id", "code"], { unique: true });
+          s.createIndex("bySupplier", "supplier_id");
         }
 
         let equivStore = db.objectStoreNames.contains("equivalences")
@@ -198,45 +212,87 @@ export const suppliersRepo = {
   },
 };
 
+export interface DuplicateCodeInFile {
+  code: string;
+  count: number;
+}
+
 export const productsRepo = {
+  /** Todo el catálogo, de todos los proveedores — usar sólo para pantallas
+   * globales (backup, conteos generales). Para matching o listado por
+   * carpeta, usar `listBySupplier`. */
   async list(): Promise<Product[]> {
     const db = await getDB();
     return db.getAll("products");
   },
-  async getByCode(code: string): Promise<Product | undefined> {
+  /** Catálogo de UN proveedor — esto es "la carpeta". El matching y la
+   * pantalla de catálogo siempre trabajan acá adentro, nunca contra todo. */
+  async listBySupplier(supplierId: string): Promise<Product[]> {
     const db = await getDB();
-    return db.getFromIndex("products", "byCode", code);
+    return db.getAllFromIndex("products", "bySupplier", supplierId);
   },
-  /** Inserta o actualiza por código (usado al cargar la exportación de precios actuales). */
-  async upsertByCode(input: Omit<Product, "id" | "created_at" | "updated_at">): Promise<Product> {
+  async getByCode(supplierId: string, code: string): Promise<Product | undefined> {
     const db = await getDB();
-    const existing = await db.getFromIndex("products", "byCode", input.code);
+    return db.getFromIndex("products", "bySupplierCode", [supplierId, code]);
+  },
+  /** Inserta o actualiza por código DENTRO de la carpeta de un proveedor. */
+  async upsertByCode(
+    supplierId: string,
+    input: Omit<Product, "id" | "created_at" | "updated_at" | "supplier_id">
+  ): Promise<Product> {
+    const db = await getDB();
+    const existing = await db.getFromIndex("products", "bySupplierCode", [supplierId, input.code]);
     const record: Product = existing
-      ? { ...existing, ...input, updated_at: nowISO() }
-      : { ...input, id: newId(), created_at: nowISO(), updated_at: nowISO() };
+      ? { ...existing, ...input, supplier_id: supplierId, updated_at: nowISO() }
+      : { ...input, supplier_id: supplierId, id: newId(), created_at: nowISO(), updated_at: nowISO() };
     await db.put("products", record);
     return record;
   },
-  /** Importación masiva en una sola transacción para evitar un viaje a IndexedDB por producto. */
-  async bulkUpsertByCode(inputs: Omit<Product, "id" | "created_at" | "updated_at">[]): Promise<Product[]> {
-    if (inputs.length === 0) return [];
+  /**
+   * Importación masiva en una sola transacción, todo dentro de la carpeta de
+   * `supplierId`. Si el archivo trae el mismo código repetido más de una vez
+   * (típico error de un Excel mal armado), no dejamos que eso reviente la
+   * transacción entera contra el índice único: nos quedamos con la ÚLTIMA
+   * fila de cada código y devolvemos la lista de códigos repetidos para que
+   * la pantalla se lo muestre al usuario.
+   */
+  async bulkUpsertByCode(
+    supplierId: string,
+    inputs: Omit<Product, "id" | "created_at" | "updated_at" | "supplier_id">[]
+  ): Promise<{ records: Product[]; duplicatesInFile: DuplicateCodeInFile[] }> {
+    if (inputs.length === 0) return { records: [], duplicatesInFile: [] };
 
     const db = await getDB();
-    const existing = await db.getAll("products");
+    const existing = await db.getAllFromIndex("products", "bySupplier", supplierId);
     const byCode = new Map(existing.map((product) => [product.code, product]));
     const now = nowISO();
 
-    const records = inputs.map((input) => {
+    // Detectar códigos repetidos dentro del propio archivo antes de pisarlos
+    // en silencio.
+    const countInFile = new Map<string, number>();
+    for (const input of inputs) countInFile.set(input.code, (countInFile.get(input.code) ?? 0) + 1);
+    const duplicatesInFile: DuplicateCodeInFile[] = [...countInFile.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([code, count]) => ({ code, count }));
+
+    // De haber repetidos, nos quedamos con la última aparición de cada
+    // código (es el comportamiento más predecible: "lo último que dice el
+    // archivo gana"), en vez de que la fila anterior gane por orden de
+    // llegada a la transacción o que la escritura falle a mitad de camino.
+    const lastByCode = new Map<string, (typeof inputs)[number]>();
+    for (const input of inputs) lastByCode.set(input.code, input);
+
+    const records = [...lastByCode.values()].map((input) => {
       const old = byCode.get(input.code);
       return old
-        ? { ...old, ...input, updated_at: now }
-        : { ...input, id: newId(), created_at: now, updated_at: now };
+        ? { ...old, ...input, supplier_id: supplierId, updated_at: now }
+        : { ...input, supplier_id: supplierId, id: newId(), created_at: now, updated_at: now };
     });
 
     const tx = db.transaction("products", "readwrite");
     await Promise.all(records.map((record) => tx.store.put(record)));
     await tx.done;
-    return records;
+    return { records, duplicatesInFile };
   },
   async get(id: string): Promise<Product | undefined> {
     const db = await getDB();
@@ -247,10 +303,12 @@ export const productsRepo = {
     const results = await Promise.all(ids.map((id) => db.get("products", id)));
     return results.filter((p): p is Product => Boolean(p));
   },
-  /** Búsqueda simple por código o descripción — usada en la búsqueda manual del panel de revisión. */
-  async search(query: string, limit = 25): Promise<Product[]> {
+  /** Búsqueda simple por código o descripción, sólo dentro de la carpeta de
+   * un proveedor — usada en la búsqueda manual del panel de revisión, que
+   * siempre está resolviendo un ítem de UN proveedor puntual. */
+  async search(supplierId: string, query: string, limit = 25): Promise<Product[]> {
     const db = await getDB();
-    const all = await db.getAll("products");
+    const all = await db.getAllFromIndex("products", "bySupplier", supplierId);
     const q = query.trim().toLowerCase();
     if (!q) return [];
     return all

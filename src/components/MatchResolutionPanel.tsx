@@ -27,7 +27,7 @@ export default function MatchResolutionPanel({
       setResults([]);
       return;
     }
-    setResults(await productsRepo.search(q));
+    setResults(await productsRepo.search(session.supplier_id, q));
   }
 
   async function handleConfirm(productId: string) {

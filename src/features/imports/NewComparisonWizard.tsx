@@ -27,8 +27,18 @@ export default function NewComparisonWizard() {
 
   useEffect(() => {
     suppliersRepo.list().then((all) => setSuppliers(all.filter((s) => s.active)));
-    productsRepo.list().then((all) => setCatalogSize(all.length));
   }, []);
+
+  useEffect(() => {
+    if (!supplierId) {
+      setCatalogSize(null);
+      return;
+    }
+    // El tamaño relevante es el de LA CARPETA de este proveedor — el
+    // matching nunca mira el catálogo de los demás, así que avisar sobre el
+    // total general sería engañoso.
+    productsRepo.listBySupplier(supplierId).then((list) => setCatalogSize(list.length));
+  }, [supplierId]);
 
   async function handleSupplierFile(file: File) {
     setSupplierFile(file);
@@ -120,7 +130,7 @@ export default function NewComparisonWizard() {
 
       {catalogSize === 0 && (
         <div className="mb-4 rounded border border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-600">
-          Todavía no cargaste tu catálogo — sin eso, todo va a salir como "no encontrado".{" "}
+          Todavía no cargaste el catálogo de este proveedor — sin eso, todo va a salir como "no encontrado".{" "}
           <Link to="/catalog" className="font-semibold underline">
             Cargarlo ahora
           </Link>
