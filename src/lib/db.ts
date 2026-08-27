@@ -217,6 +217,27 @@ export const productsRepo = {
     await db.put("products", record);
     return record;
   },
+  /** Importación masiva en una sola transacción para evitar un viaje a IndexedDB por producto. */
+  async bulkUpsertByCode(inputs: Omit<Product, "id" | "created_at" | "updated_at">[]): Promise<Product[]> {
+    if (inputs.length === 0) return [];
+
+    const db = await getDB();
+    const existing = await db.getAll("products");
+    const byCode = new Map(existing.map((product) => [product.code, product]));
+    const now = nowISO();
+
+    const records = inputs.map((input) => {
+      const old = byCode.get(input.code);
+      return old
+        ? { ...old, ...input, updated_at: now }
+        : { ...input, id: newId(), created_at: now, updated_at: now };
+    });
+
+    const tx = db.transaction("products", "readwrite");
+    await Promise.all(records.map((record) => tx.store.put(record)));
+    await tx.done;
+    return records;
+  },
   async get(id: string): Promise<Product | undefined> {
     const db = await getDB();
     return db.get("products", id);

@@ -56,11 +56,19 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
     equivalencesRepo.listForSupplier(supplierId),
     discontinuedCodesRepo.listForSupplier(supplierId),
   ]);
-  const confirmedEquivalences = new Map(
-    equivalencesForSupplier.filter((e) => e.decision === "confirmed").map((e) => [e.supplier_code, e.product_id])
+  // Las claves deben coincidir EXACTAMENTE con las que usa matching.ts.
+  // Antes se guardaban como `supplier_code`, pero el motor buscaba
+  // `supplierId::supplierCode`, por lo que las equivalencias aprendidas
+  // nunca se recuperaban en la siguiente comparación.
+  const confirmedEquivalences = new Map<string, string>(
+    equivalencesForSupplier
+      .filter((e) => e.decision === "confirmed")
+      .map((e) => [`${supplierId}::${e.supplier_code}`, e.product_id])
   );
-  const rejectedEquivalences = new Set(
-    equivalencesForSupplier.filter((e) => e.decision === "rejected").map((e) => `${e.supplier_code}::${e.product_id}`)
+  const rejectedEquivalences = new Set<string>(
+    equivalencesForSupplier
+      .filter((e) => e.decision === "rejected")
+      .map((e) => `${supplierId}::${e.supplier_code}::${e.product_id}`)
   );
   const discontinuedCodes = new Set(discontinuedForSupplier.map((d) => d.supplier_code));
 
@@ -97,10 +105,22 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
     // no volvemos a preguntar, ni a correr el matching para nada.
     if (discontinuedCodes.has(item.supplier_code)) {
       summary.discontinued_items++;
+
+      // Aunque el artículo esté discontinuado, conservamos el precio
+      // parseado. Esto permite auditar/exportar exactamente qué informó el
+      // proveedor en esta lista.
+      let discontinuedParsedPrice: number | null = null;
+      let discontinuedParseError: string | null = null;
+      try {
+        discontinuedParsedPrice = parseDecimal(item.raw_price);
+      } catch {
+        discontinuedParseError = "No se pudo interpretar el precio";
+      }
+
       updatedItems.push({
         ...item,
-        parsed_price: null,
-        parse_error: null,
+        parsed_price: discontinuedParsedPrice,
+        parse_error: discontinuedParseError,
         matched_product_id: null,
         match_level: "none",
         match_state: "discontinued",
@@ -164,6 +184,7 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
       else summary.price_unchanged++;
 
       if (diff !== 0) {
+        summary.approved_changes++;
         changesToCreate.push({
           comparison_session_id: "", // se completa después de crear la sesión
           price_list_item_id: item.id,
@@ -175,6 +196,9 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
           new_currency: product.currency,
           diff_absolute: diff,
           diff_percent: product.current_price ? Math.round((diff / product.current_price) * 10000) / 100 : null,
+          // Los matches "safe" se consideran aprobados automáticamente por
+          // diseño del flujo actual; los matches en revisión esperan acción
+          // humana en reviewActions.ts.
           status: "approved",
           decided_at: null,
         });

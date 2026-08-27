@@ -106,6 +106,41 @@ describe("matchItem — flujo completo", () => {
     };
   }
 
+  it("recupera una equivalencia confirmada guardada por proveedor", () => {
+    const products: ProductForMatch[] = [
+      { id: "1", code: "INT-001", description: "Disco de corte 115 mm", current_price: 2000, currency: "ARS" },
+    ];
+    const deps = buildDeps(products);
+    deps.confirmedEquivalences.set("sup1::PROV-4587", "1");
+
+    const result = matchItem(
+      "sup1",
+      { supplier_code: "PROV-4587", supplier_description: "Disco corte 115 mm" },
+      deps
+    );
+
+    expect(result.matchState).toBe("safe");
+    expect(result.matchLevel).toBe("equivalence");
+    expect(result.matchedProductId).toBe("1");
+  });
+
+  it("no usa una equivalencia rechazada para sugerir el mismo producto", () => {
+    const products: ProductForMatch[] = [
+      { id: "1", code: "INT-001", description: "Disco de corte 115 mm", current_price: 2000, currency: "ARS" },
+    ];
+    const deps = buildDeps(products);
+    deps.rejectedEquivalences.add("sup1::PROV-4587::1");
+
+    const result = matchItem(
+      "sup1",
+      { supplier_code: "PROV-4587", supplier_description: "Disco de corte 115 mm" },
+      deps
+    );
+
+    expect(result.matchedProductId).toBeNull();
+    expect(result.matchState).toBe("not_found");
+  });
+
   it("código exacto no muestra candidatos alternativos", () => {
     const products: ProductForMatch[] = [
       { id: "1", code: "4587", description: "Disco de corte 115 mm", current_price: 2000, currency: "ARS" },

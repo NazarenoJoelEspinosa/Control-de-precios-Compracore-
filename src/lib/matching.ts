@@ -225,6 +225,7 @@ export function matchItem(
   let bestFamily: { product: ProductForMatch; similarity: number } | null = null;
   if (normalizedItemCode.length >= 3) {
     for (const entry of deps.descriptionIndex) {
+      if (deps.rejectedEquivalences.has(`${equivKey}::${entry.product.id}`)) continue;
       const sim = codeFamilySimilarity(normalizedItemCode, entry.normalizedCode);
       if (sim >= 0.6 && (!bestFamily || sim > bestFamily.similarity)) {
         bestFamily = { product: entry.product, similarity: sim };

@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { getDB, productsRepo } from "@/lib/db";
 import { parseSpreadsheetFile, type ParsedFile } from "@/lib/fileParsing";
 import { suggestColumnMapping, type ColumnMapping } from "@/lib/columnMapping";
-import { formatPrice } from "@/lib/normalize";
+import { formatPrice, parseDecimal } from "@/lib/normalize";
 import type { Product } from "@/types/database";
 
 export default function CatalogPage() {
@@ -272,6 +272,14 @@ function EditProductForm({ product, onClose, onSaved }: { product: Product; onCl
   );
 }
 
+function parsePriceForImport(value: unknown): number {
+  try {
+    return parseDecimal(value);
+  } catch {
+    return 0;
+  }
+}
+
 function ImportCatalogForm({ onDone }: { onDone: () => void }) {
   const [parsed, setParsed] = useState<ParsedFile | null>(null);
   const [mapping, setMapping] = useState<ColumnMapping>({});
@@ -289,19 +297,22 @@ function ImportCatalogForm({ onDone }: { onDone: () => void }) {
     setImporting(true);
     setError(null);
     try {
-      for (const row of parsed.rows) {
+      const products = parsed.rows.flatMap((row) => {
         const code = String(row[mapping.code ?? ""] ?? "").trim();
-        if (!code) continue;
-        await productsRepo.upsertByCode({
+        if (!code) return [];
+
+        return [{
           code,
           description: String(row[mapping.description ?? ""] ?? "").trim(),
           brand: String(row[mapping.brand ?? ""] ?? "").trim(),
           unit: String(row[mapping.unit ?? ""] ?? "").trim(),
-          currency: "ARS",
-          current_price: Number(String(row[mapping.price ?? ""] ?? "0").replace(",", ".")) || 0,
+          currency: "ARS" as const,
+          current_price: parsePriceForImport(row[mapping.price ?? ""]),
           active: true,
-        });
-      }
+        }];
+      });
+
+      await productsRepo.bulkUpsertByCode(products);
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo importar el archivo.");
