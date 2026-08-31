@@ -60,6 +60,9 @@ export default function ResultsPage() {
   const navigate = useNavigate();
   const [session, setSession] = useState<ComparisonSession | null>(null);
   const [rows, setRows] = useState<ExportRow[]>([]);
+  const [catalogGaps, setCatalogGaps] = useState<Product[]>([]);
+  const [catalogTotal, setCatalogTotal] = useState(0);
+  const [showCatalogGaps, setShowCatalogGaps] = useState(false);
   const [filter, setFilter] = useState<FilterKey>("all");
   const [sort, setSort] = useState<SortKey>("none");
   const [search, setSearch] = useState("");
@@ -96,6 +99,17 @@ export default function ResultsPage() {
     }));
 
     setRows(merged);
+
+    // Sentido inverso al de "no encontrados": de TU catálogo para este
+    // proveedor, cuáles no aparecieron en absoluto en esta lista. Se deriva
+    // en vivo de lo ya cargado — cualquier producto con al menos un ítem que
+    // le haya quedado asociado (sea cual sea su match_state) cuenta como
+    // "sí apareció".
+    const catalogProducts = (await productsRepo.listBySupplier(sessionData.supplier_id)).filter((p) => p.active);
+    const matchedProductIds = new Set(items.map((i) => i.matched_product_id).filter(Boolean) as string[]);
+    setCatalogGaps(catalogProducts.filter((p) => !matchedProductIds.has(p.id)));
+    setCatalogTotal(catalogProducts.length);
+
     setLoading(false);
   }
 
@@ -212,14 +226,70 @@ export default function ResultsPage() {
         </div>
       </div>
 
-      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
-        <MiniStat label="Analizados" value={session.total_items} />
+      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-6">
+        <MiniStat label="Analizados" value={session.total_items} hint="ítems de la lista del proveedor" />
         <MiniStat label="Seguros" value={session.safe_matches} tone="text-success-500" />
         <MiniStat label="Revisar" value={session.review_items} tone="text-amber-600" />
-        <MiniStat label="No encontrados" value={session.not_found_items} tone="text-danger-500" />
+        <MiniStat
+          label="No encontrados"
+          value={session.not_found_items}
+          tone="text-danger-500"
+          hint="de SU lista, sin equivalente en tu catálogo"
+        />
         <MiniStat label="Discontinuados" value={session.discontinued_items} tone="text-steel-600" />
+        <button onClick={() => setShowCatalogGaps((v) => !v)} className="text-left">
+          <MiniStat
+            label="De tu catálogo, no en su lista"
+            value={catalogGaps.length}
+            tone="text-violet-500"
+            hint={`de ${catalogTotal.toLocaleString("es-AR")} productos tuyos`}
+            clickable
+          />
+        </button>
       </div>
 
+      {showCatalogGaps ? (
+        <div className="panel overflow-hidden">
+          <div className="flex items-center justify-between border-b border-steel-100 bg-steel-50 px-4 py-3">
+            <div>
+              <p className="text-sm font-medium text-ink">
+                Productos de tu catálogo que Protec no mencionó en esta lista
+              </p>
+              <p className="text-xs text-steel-600">
+                Puede ser que este proveedor no los vendió esta vez, o que su código/descripción cambió lo suficiente
+                como para que no se reconociera automáticamente. Revisalos a mano si te interesa.
+              </p>
+            </div>
+            <button onClick={() => setShowCatalogGaps(false)} className="shrink-0 text-sm text-teal-600 hover:underline">
+              ‹ Volver a los resultados
+            </button>
+          </div>
+          <table className="w-full text-sm">
+            <thead className="border-b border-steel-100 text-left text-xs font-medium text-steel-600">
+              <tr>
+                <th className="px-3 py-2">Código</th>
+                <th className="px-3 py-2">Descripción</th>
+                <th className="px-3 py-2">Precio actual</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-steel-100">
+              {catalogGaps.map((p) => (
+                <tr key={p.id} className="hover:bg-steel-50">
+                  <td className="mono-num px-3 py-2 text-steel-600">{p.code}</td>
+                  <td className="px-3 py-2 text-ink">{p.description}</td>
+                  <td className="mono-num px-3 py-2 text-ink">{formatPrice(p.current_price, p.currency)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {catalogGaps.length === 0 && (
+            <p className="px-4 py-8 text-center text-sm text-steel-600">
+              Todo tu catálogo para este proveedor apareció en esta lista.
+            </p>
+          )}
+        </div>
+      ) : (
+        <>
       <div className="mb-4 flex flex-wrap items-center gap-2">
         {FILTERS.map((f) => (
           <button
@@ -331,6 +401,8 @@ export default function ResultsPage() {
           <p className="px-4 py-8 text-center text-sm text-steel-600">No hay productos que coincidan con este filtro.</p>
         )}
       </div>
+        </>
+      )}
 
       {selected && (
         <ProductDrawer
@@ -355,10 +427,25 @@ function nameOf(row: ExportRow): string {
   return row.product?.description ?? row.item.supplier_description;
 }
 
-function MiniStat({ label, value, tone }: { label: string; value: number; tone?: string }) {
+function MiniStat({
+  label,
+  value,
+  tone,
+  hint,
+  clickable,
+}: {
+  label: string;
+  value: number;
+  tone?: string;
+  hint?: string;
+  clickable?: boolean;
+}) {
   return (
-    <div className="panel p-3">
-      <p className="text-xs text-steel-600">{label}</p>
+    <div className={clsx("panel p-3", clickable && "cursor-pointer transition hover:border-teal-500")} title={hint}>
+      <p className="text-xs text-steel-600">
+        {label}
+        {hint && <span className="ml-1 text-steel-300">ⓘ</span>}
+      </p>
       <p className={clsx("mono-num text-xl font-semibold", tone ?? "text-ink")}>{value.toLocaleString("es-AR")}</p>
     </div>
   );

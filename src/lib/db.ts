@@ -42,6 +42,19 @@ const DB_VERSION = 4;
 
 let dbPromise: Promise<IDBPDatabase<PriceCoreDB>> | null = null;
 
+/**
+ * Si una pestaña vieja se queda con la conexión abierta en una versión
+ * anterior de la base (típico: quedó una pestaña de PriceCore abierta de
+ * antes de actualizar el código), IndexedDB NO tira ningún error — se queda
+ * esperando en silencio a que esa conexión se cierre, y la app entera se ve
+ * como si estuviera "cargando" para siempre. Guardamos acá el motivo para
+ * que la UI pueda mostrarlo en vez de dejar la pantalla en blanco.
+ */
+let blockedReason: string | null = null;
+export function getDBBlockedReason(): string | null {
+  return blockedReason;
+}
+
 export function getDB(): Promise<IDBPDatabase<PriceCoreDB>> {
   if (!dbPromise) {
     dbPromise = openDB<PriceCoreDB>(DB_NAME, DB_VERSION, {
@@ -115,6 +128,23 @@ export function getDB(): Promise<IDBPDatabase<PriceCoreDB>> {
         if (!db.objectStoreNames.contains("settings")) {
           db.createObjectStore("settings", { keyPath: "id" });
         }
+      },
+      // Esta pestaña ya tenía la base abierta en una versión vieja y otra
+      // pestaña/ventana está pidiendo abrir una versión nueva: nos cerramos
+      // solos para no bloquearla. Sin esto, la otra pestaña se queda
+      // esperando indefinidamente sin ningún error visible.
+      blocking() {
+        dbPromise?.then((db) => db.close());
+        dbPromise = null;
+      },
+      // Esta conexión (la nueva) está bloqueada porque otra pestaña sigue
+      // con la base abierta en una versión anterior y no se cerró sola
+      // (por ejemplo, una versión vieja de la app sin el handler de arriba).
+      // Guardamos el motivo para que la UI lo muestre en vez de dejar
+      // "Cargando..." para siempre.
+      blocked() {
+        blockedReason =
+          "Hay otra pestaña con PriceCore abierta en una versión anterior. Cerrala (o cerrá todas las pestañas de PriceCore) y volvé a cargar esta página.";
       },
     });
   }

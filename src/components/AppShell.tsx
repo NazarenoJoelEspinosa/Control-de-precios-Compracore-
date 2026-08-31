@@ -1,7 +1,8 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 import clsx from "clsx";
 import { exportBackup, downloadBackup, readBackupFile, importBackup } from "@/lib/backup";
+import { getDBBlockedReason } from "@/lib/db";
 
 const NAV_ITEMS = [
   { to: "/", label: "Dashboard" },
@@ -16,6 +17,20 @@ const NAV_ITEMS = [
 export default function AppShell({ children }: { children: ReactNode }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [dbBlocked, setDbBlocked] = useState<string | null>(null);
+
+  // El evento `blocked` de IndexedDB dispara en cualquier momento, no en
+  // respuesta a una acción del usuario — no hay forma de "esperarlo" con
+  // await, así que lo sondeamos. Es liviano (una lectura de variable) y
+  // para en cuanto aparece el motivo.
+  useEffect(() => {
+    if (dbBlocked) return;
+    const id = setInterval(() => {
+      const reason = getDBBlockedReason();
+      if (reason) setDbBlocked(reason);
+    }, 400);
+    return () => clearInterval(id);
+  }, [dbBlocked]);
 
   async function handleExport() {
     const payload = await exportBackup();
@@ -37,6 +52,17 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-screen bg-steel-50">
+      {dbBlocked && (
+        <div className="sticky top-0 z-50 flex items-center justify-between gap-4 bg-danger-500 px-6 py-3 text-sm text-white">
+          <span>⚠️ {dbBlocked}</span>
+          <button
+            onClick={() => window.location.reload()}
+            className="shrink-0 rounded bg-white/20 px-3 py-1.5 font-semibold hover:bg-white/30"
+          >
+            Recargar esta pestaña
+          </button>
+        </div>
+      )}
       <div className="flex">
         <aside className="sticky top-0 flex h-screen w-56 flex-col justify-between border-r border-steel-100 bg-white px-4 py-6">
           <div>
