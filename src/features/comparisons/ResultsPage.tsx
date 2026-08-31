@@ -158,7 +158,11 @@ export default function ResultsPage() {
     return result;
   }, [rows, filter, search, sort]);
 
-  const pendingReviewCount = rows.filter((r) => ["review", "presentation_diff", "not_found"].includes(r.item.match_state)).length;
+  // Igual que en la cola: "not_found" no cuenta como pendiente de revisión
+  // porque no hay nada que decidir ahí — el proveedor tiene un artículo que
+  // vos nunca cargaste a tu sistema. Esos se ven en la tarjeta/filtro "No
+  // encontrados", no acá.
+  const pendingReviewCount = rows.filter((r) => ["review", "presentation_diff"].includes(r.item.match_state)).length;
 
   async function decide(row: ExportRow, status: "approved" | "rejected") {
     if (!row.change) return;
