@@ -5,6 +5,8 @@ import { comparisonSessionsRepo, priceChangesRepo, priceListItemsRepo, productsR
 import { MatchStateBadge, PriceDeltaBadge } from "@/components/ui/StatusBadges";
 import MatchResolutionPanel from "@/components/MatchResolutionPanel";
 import { formatPrice } from "@/lib/normalize";
+import { scoreProductAgainstItem } from "@/lib/matching";
+import { confirmMatch } from "@/lib/reviewActions";
 import { exportAllResults, exportApprovedOnly, type ExportRow } from "@/lib/exportResults";
 import type { ComparisonSession, PriceChange, PriceListItem, Product } from "@/types/database";
 
@@ -63,6 +65,7 @@ export default function ResultsPage() {
   const [catalogGaps, setCatalogGaps] = useState<Product[]>([]);
   const [catalogTotal, setCatalogTotal] = useState(0);
   const [showCatalogGaps, setShowCatalogGaps] = useState(false);
+  const [resolvingGap, setResolvingGap] = useState<Product | null>(null);
   const [filter, setFilter] = useState<FilterKey>("all");
   const [sort, setSort] = useState<SortKey>("none");
   const [search, setSearch] = useState("");
@@ -112,6 +115,8 @@ export default function ResultsPage() {
 
     setLoading(false);
   }
+
+  const notFoundItems = useMemo(() => rows.filter((r) => r.item.match_state === "not_found").map((r) => r.item), [rows]);
 
   const filtered = useMemo(() => {
     let result = rows.filter((row) => {
@@ -191,10 +196,18 @@ export default function ResultsPage() {
           </h1>
         </div>
         <div className="flex gap-2">
+          {catalogGaps.length > 0 && (
+            <button
+              onClick={() => setShowCatalogGaps(true)}
+              className="rounded bg-violet-500 px-3 py-2 text-sm font-semibold text-white hover:bg-violet-500/90"
+            >
+              Encontrar los {catalogGaps.length} de mi catálogo
+            </button>
+          )}
           {pendingReviewCount > 0 && (
             <Link
               to={`/comparisons/${session.id}/review`}
-              className="rounded bg-amber-400 px-3 py-2 text-sm font-semibold text-white hover:bg-amber-600"
+              className="rounded border border-steel-200 px-3 py-2 text-sm font-medium text-steel-600 hover:bg-steel-50"
             >
               Revisar pendientes ({pendingReviewCount})
             </Link>
@@ -262,36 +275,53 @@ export default function ResultsPage() {
         <div className="panel overflow-hidden">
           <div className="flex items-center justify-between border-b border-steel-100 bg-steel-50 px-4 py-3">
             <div>
-              <p className="text-sm font-medium text-ink">
-                Productos de tu catálogo que Protec no mencionó en esta lista
-              </p>
+              <p className="text-sm font-medium text-ink">Productos de tu catálogo que no aparecieron en esta lista</p>
               <p className="text-xs text-steel-600">
-                Puede ser que este proveedor no los vendió esta vez, o que su código/descripción cambió lo suficiente
-                como para que no se reconociera automáticamente. Revisalos a mano si te interesa.
+                Puede ser que el proveedor no los vendió esta vez, que los descontinuó, o que vinieron con un
+                código/descripción tan distinta que el sistema no los pudo reconocer solo. Buscalos entre lo que sí
+                mandó y no se enganchó a nada.
               </p>
             </div>
             <button onClick={() => setShowCatalogGaps(false)} className="shrink-0 text-sm text-teal-600 hover:underline">
               ‹ Volver a los resultados
             </button>
           </div>
-          <table className="w-full text-sm">
-            <thead className="border-b border-steel-100 text-left text-xs font-medium text-steel-600">
-              <tr>
-                <th className="px-3 py-2">Código</th>
-                <th className="px-3 py-2">Descripción</th>
-                <th className="px-3 py-2">Precio actual</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-steel-100">
-              {catalogGaps.map((p) => (
-                <tr key={p.id} className="hover:bg-steel-50">
-                  <td className="mono-num px-3 py-2 text-steel-600">{p.code}</td>
-                  <td className="px-3 py-2 text-ink">{p.description}</td>
-                  <td className="mono-num px-3 py-2 text-ink">{formatPrice(p.current_price, p.currency)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="divide-y divide-steel-100">
+            {catalogGaps.map((p) => (
+              <div key={p.id}>
+                <div className="flex items-center justify-between px-4 py-2.5 hover:bg-steel-50">
+                  <div>
+                    <p className="text-sm text-ink">{p.description}</p>
+                    <p className="mono-num text-xs text-steel-600">
+                      {p.code} · {formatPrice(p.current_price, p.currency)}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setResolvingGap(resolvingGap?.id === p.id ? null : p)}
+                    className={clsx(
+                      "shrink-0 rounded px-3 py-1.5 text-xs font-semibold",
+                      resolvingGap?.id === p.id
+                        ? "bg-steel-200 text-steel-800"
+                        : "bg-teal-500 text-white hover:bg-teal-600"
+                    )}
+                  >
+                    {resolvingGap?.id === p.id ? "Cerrar" : "Buscar"}
+                  </button>
+                </div>
+                {resolvingGap?.id === p.id && (
+                  <GapResolutionPanel
+                    session={session}
+                    product={p}
+                    notFoundItems={notFoundItems}
+                    onResolved={() => {
+                      setResolvingGap(null);
+                      load();
+                    }}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
           {catalogGaps.length === 0 && (
             <p className="px-4 py-8 text-center text-sm text-steel-600">
               Todo tu catálogo para este proveedor apareció en esta lista.
@@ -552,4 +582,91 @@ function matchLevelLabel(level: PriceListItem["match_level"]): string {
     default:
       return "Sin match";
   }
+}
+
+/**
+ * Resuelve, a mano, un producto de TU catálogo que no apareció en la lista:
+ * busca entre los ítems del proveedor que quedaron sin destino ("no
+ * encontrados") cuáles se parecen por descripción, y deja enlazar el que
+ * corresponda — o filtrar a mano si ninguna sugerencia sirve.
+ */
+function GapResolutionPanel({
+  session,
+  product,
+  notFoundItems,
+  onResolved,
+}: {
+  session: ComparisonSession;
+  product: Product;
+  notFoundItems: PriceListItem[];
+  onResolved: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const suggestions = useMemo(() => {
+    return notFoundItems
+      .map((item) => ({
+        item,
+        score: scoreProductAgainstItem(
+          { id: product.id, code: product.code, description: product.description, brand: product.brand, unit: product.unit, current_price: product.current_price, currency: product.currency },
+          { supplier_code: item.supplier_code, supplier_description: item.supplier_description, supplier_brand: item.supplier_brand, supplier_unit: item.supplier_unit }
+        ),
+      }))
+      .sort((a, b) => b.score - a.score);
+  }, [notFoundItems, product]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const base = q
+      ? suggestions.filter(
+          ({ item }) =>
+            item.supplier_code.toLowerCase().includes(q) || item.supplier_description.toLowerCase().includes(q)
+        )
+      : suggestions.filter(({ score }) => score >= 25);
+    return base.slice(0, 8);
+  }, [suggestions, query]);
+
+  async function handleLink(item: PriceListItem) {
+    setBusy(true);
+    await confirmMatch(session, item, product.id);
+    setBusy(false);
+    onResolved();
+  }
+
+  return (
+    <div className="space-y-2 border-t border-steel-100 bg-steel-50 px-4 py-3">
+      <input
+        autoFocus
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Filtrar por código o descripción del proveedor..."
+        className="w-full rounded border border-steel-200 px-3 py-1.5 text-sm focus:border-teal-500"
+      />
+      {filtered.length === 0 ? (
+        <p className="text-xs text-steel-300">
+          {notFoundItems.length === 0
+            ? "No quedan ítems sin enganchar en esta lista para vincular."
+            : "Nada se parece por descripción — probá filtrar a mano por código."}
+        </p>
+      ) : (
+        <div className="max-h-56 space-y-1 overflow-y-auto">
+          {filtered.map(({ item }) => (
+            <button
+              key={item.id}
+              disabled={busy}
+              onClick={() => handleLink(item)}
+              className="block w-full rounded border border-steel-200 bg-white p-2 text-left text-sm hover:border-teal-500 hover:bg-teal-50 disabled:opacity-60"
+            >
+              <p className="font-medium text-ink">{item.supplier_description}</p>
+              <p className="mono-num text-xs text-steel-600">
+                {item.supplier_code}
+                {item.raw_price ? ` · ${item.raw_price}` : ""}
+              </p>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }

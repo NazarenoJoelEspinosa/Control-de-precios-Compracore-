@@ -135,6 +135,23 @@ function unionSize<T>(a: Set<T>, b: Set<T>): number {
   return new Set([...a, ...b]).size;
 }
 
+/**
+ * Score de un producto interno contra UN ítem de una lista de proveedor —
+ * mismo cálculo que `scoreDescription`, pero pensado para el sentido
+ * inverso: "de mi catálogo, ¿cuál de los ítems sin matchear del proveedor es
+ * más parecido a este producto mío?" (usado al resolver a mano los productos
+ * de tu catálogo que no aparecieron en la lista).
+ */
+export function scoreProductAgainstItem(product: ProductForMatch, item: IncomingItem): number {
+  const productText = [product.description, product.brand ?? "", product.unit ?? ""].filter(Boolean).join(" ");
+  const itemText = [item.supplier_description, item.supplier_brand ?? "", item.supplier_unit ?? ""]
+    .filter(Boolean)
+    .join(" ");
+  const itemTokenSet = new Set(tokenize(itemText));
+  const itemTrigramSet = trigrams(itemText);
+  return scoreDescription(productText, itemText, itemTokenSet, itemTrigramSet);
+}
+
 /** Precalcula tokens/trigramas de un producto — llamar una vez por producto, no por comparación. */
 export interface ProductIndexEntry {
   product: ProductForMatch;
