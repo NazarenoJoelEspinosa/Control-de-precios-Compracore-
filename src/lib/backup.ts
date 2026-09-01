@@ -1,7 +1,7 @@
 import { getDB } from "./db";
 
 interface BackupPayload {
-  version: 2;
+  version: 1 | 2;
   exported_at: string;
   suppliers: unknown[];
   supplierColumnConfig: unknown[];
