@@ -1,5 +1,5 @@
 import { normalizeCodeForMatch, normalizeText, parseDecimal } from "./normalize";
-import { buildProductIndexEntry, matchItem, type MatchDeps, type ProductForMatch } from "./matching";
+import { buildProductIndexEntry, matchItem, type MatchDeps, type ProductForMatch, type MatchResult } from "./matching";
 import {
   comparisonSessionsRepo,
   discontinuedCodesRepo,
@@ -30,6 +30,21 @@ import type { ComparisonSession, PriceListItem, Product } from "@/types/database
  * — cuando el usuario los confirma (ver reviewActions.ts), ahí sí se crea
  * el cambio de precio y se suman a las estadísticas.
  */
+async function matchInWorker(supplierId: string, items: PriceListItem[], deps: MatchDeps, thresholds: { safeMin: number; reviewMin: number }): Promise<MatchResult[]> {
+  if (typeof Worker === "undefined") {
+    return items.map((item) => matchItem(supplierId, { supplier_code: item.supplier_code, supplier_description: item.supplier_description, supplier_brand: item.supplier_brand, supplier_unit: item.supplier_unit }, deps, thresholds));
+  }
+  const worker = new Worker(new URL("./matching.worker.ts", import.meta.url), { type: "module" });
+  try {
+    const incoming = items.map((item) => ({ supplier_code: item.supplier_code, supplier_description: item.supplier_description, supplier_brand: item.supplier_brand, supplier_unit: item.supplier_unit }));
+    return await new Promise<MatchResult[]>((resolve, reject) => {
+      worker.onmessage = (event: MessageEvent<MatchResult[]>) => resolve(event.data);
+      worker.onerror = (event) => reject(new Error(event.message || "No se pudo ejecutar el motor de comparación."));
+      worker.postMessage({ supplierId, items: incoming, deps, thresholds });
+    });
+  } finally { worker.terminate(); }
+}
+
 export async function runMatchingForPriceList(priceListId: string, supplierId: string): Promise<string> {
   const items = await priceListItemsRepo.listByPriceList(priceListId);
   // Sólo la carpeta de ESTE proveedor — nunca el catálogo entero. Esto es lo
@@ -54,6 +69,20 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
   // Tokenizar el catálogo es la parte cara del matching — se hace UNA vez
   // acá, nunca dentro del loop de ítems.
   const descriptionIndex = activeProducts.map(buildProductIndexEntry);
+  const tokenIndex = new Map<string, typeof descriptionIndex>();
+  const codeFamilyIndex = new Map<string, typeof descriptionIndex>();
+  for (const entry of descriptionIndex) {
+    const prefix = entry.normalizedCode.slice(0, 5);
+    if (prefix.length >= 5) {
+      const bucket = codeFamilyIndex.get(prefix);
+      if (bucket) bucket.push(entry); else codeFamilyIndex.set(prefix, [entry]);
+    }
+    for (const token of entry.tokenSet) {
+      const stem = token.length > 4 && token.endsWith("es") ? token.slice(0, -2) : token.length > 3 && token.endsWith("s") ? token.slice(0, -1) : token;
+      const bucket = tokenIndex.get(stem);
+      if (bucket) bucket.push(entry); else tokenIndex.set(stem, [entry]);
+    }
+  }
 
   // Traer de una sola consulta todo lo que el proveedor tiene aprendido
   // (equivalencias + discontinuados), en vez de una consulta por ítem.
@@ -84,6 +113,9 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
     rejectedEquivalences,
     productsById,
     descriptionIndex,
+    tokenIndex,
+    codeFamilyIndex,
+    maxCandidates: 250,
   };
 
   const summary = {
@@ -103,7 +135,10 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
   const updatedItems: PriceListItem[] = [];
   const changesToCreate: Parameters<typeof priceChangesRepo.bulkCreate>[0] = [];
 
-  for (const item of items) {
+  const workerResults = await matchInWorker(supplierId, items, deps, thresholds);
+
+  for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+    const item = items[itemIndex];
     summary.total_items++;
 
     // Códigos ya marcados como discontinuados en una comparación anterior:
@@ -142,17 +177,7 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
       parseError = "No se pudo interpretar el precio";
     }
 
-    const result = matchItem(
-      supplierId,
-      {
-        supplier_code: item.supplier_code,
-        supplier_description: item.supplier_description,
-        supplier_brand: item.supplier_brand,
-        supplier_unit: item.supplier_unit,
-      },
-      deps,
-      thresholds
-    );
+    const result = workerResults[itemIndex];
 
     switch (result.matchState) {
       case "safe":

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import clsx from "clsx";
-import { priceListItemsRepo, priceListsRepo, productsRepo, supplierColumnConfigRepo, suppliersRepo } from "@/lib/db";
+import { priceListItemsRepo, priceListsRepo, productsRepo, supplierColumnConfigRepo, suppliersRepo, settingsRepo } from "@/lib/db";
 import { runMatchingForPriceList } from "@/lib/runMatching";
 import { parseSpreadsheetFile, type ParsedFile } from "@/lib/fileParsing";
 import { suggestColumnMapping, type ColumnMapping } from "@/lib/columnMapping";
@@ -46,7 +46,8 @@ export default function NewComparisonWizard() {
     setSupplierParsed(parsed);
 
     const suggested = suggestColumnMapping(parsed.headers);
-    const saved = await supplierColumnConfigRepo.get(supplierId);
+    const appSettings = await settingsRepo.get();
+    const saved = appSettings.remember_column_mapping === false ? undefined : await supplierColumnConfigRepo.get(supplierId);
     if (saved) {
       // Sólo usamos el mapeo guardado si las columnas que recuerda todavía
       // existen en este archivo — si el proveedor cambió el formato, mejor
@@ -182,6 +183,7 @@ export default function NewComparisonWizard() {
             }}
             onBack={() => setStep(1)}
             onNext={() => setStep(3)}
+            previewRows={supplierParsed.rows.slice(0, 6)}
           />
         )}
 
@@ -312,6 +314,7 @@ function StepMapping({
   onChange,
   onBack,
   onNext,
+  previewRows,
 }: {
   headers: string[];
   mapping: ColumnMapping;
@@ -319,6 +322,7 @@ function StepMapping({
   onChange: (m: ColumnMapping) => void;
   onBack: () => void;
   onNext: () => void;
+  previewRows: Record<string, unknown>[];
 }) {
   const requiredOk = mapping.code && mapping.description && mapping.price;
   return (
@@ -356,6 +360,16 @@ function StepMapping({
       {!requiredOk && (
         <p className="mt-3 text-xs text-amber-600">Código, descripción y precio son obligatorios para continuar.</p>
       )}
+      <div className="mt-6 overflow-hidden rounded border border-steel-100">
+        <div className="border-b border-steel-100 bg-steel-50 px-3 py-2 text-xs font-semibold text-steel-700">Vista previa de la lista</div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[650px] text-xs"><thead className="border-b border-steel-100"><tr>
+            {(["code","description","unit","price","brand"] as const).map(field=><th key={field} className="px-3 py-2 text-left font-medium text-steel-600">{FIELD_LABELS[field]}</th>)}
+          </tr></thead><tbody className="divide-y divide-steel-100">
+            {previewRows.map((row,i)=><tr key={i}><td className="px-3 py-2">{String(row[mapping.code ?? ""] ?? "")}</td><td className="px-3 py-2">{String(row[mapping.description ?? ""] ?? "")}</td><td className="px-3 py-2">{String(row[mapping.unit ?? ""] ?? "")}</td><td className="px-3 py-2">{String(row[mapping.price ?? ""] ?? "")}</td><td className="px-3 py-2">{String(row[mapping.brand ?? ""] ?? "")}</td></tr>)}
+          </tbody></table>
+        </div>
+      </div>
       <div className="mt-6 flex justify-between">
         <button onClick={onBack} className="rounded px-4 py-2 text-sm font-medium text-steel-600 hover:bg-steel-50">
           Atrás

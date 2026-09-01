@@ -72,6 +72,7 @@ export default function ResultsPage() {
   const [selected, setSelected] = useState<ExportRow | null>(null);
   const [exporting, setExporting] = useState<"all" | "approved" | null>(null);
   const [loading, setLoading] = useState(true);
+  const [visibleCount, setVisibleCount] = useState(300);
 
   useEffect(() => {
     if (sessionId) load();
@@ -162,6 +163,9 @@ export default function ResultsPage() {
 
     return result;
   }, [rows, filter, search, sort]);
+
+  useEffect(() => { setVisibleCount(300); }, [filter, search, sort]);
+  const visibleRows = filtered.slice(0, visibleCount);
 
   // Igual que en la cola: "not_found" no cuenta como pendiente de revisión
   // porque no hay nada que decidir ahí — el proveedor tiene un artículo que
@@ -385,7 +389,7 @@ export default function ResultsPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-steel-100">
-            {filtered.map((row) => (
+            {visibleRows.map((row) => (
               <tr key={row.item.id} className="hover:bg-steel-50">
                 <td className="px-3 py-2"></td>
                 <td className="max-w-xs truncate px-3 py-2 text-ink">
@@ -439,6 +443,13 @@ export default function ResultsPage() {
         </table>
         {filtered.length === 0 && (
           <p className="px-4 py-8 text-center text-sm text-steel-600">No hay productos que coincidan con este filtro.</p>
+        )}
+        {visibleRows.length < filtered.length && (
+          <div className="border-t border-steel-100 p-3 text-center">
+            <button onClick={() => setVisibleCount(v => v + 300)} className="rounded border border-steel-200 px-4 py-2 text-xs font-semibold text-steel-700 hover:bg-steel-50">
+              Mostrar 300 más · {visibleRows.length.toLocaleString("es-AR")} de {filtered.length.toLocaleString("es-AR")}
+            </button>
+          </div>
         )}
       </div>
         </>

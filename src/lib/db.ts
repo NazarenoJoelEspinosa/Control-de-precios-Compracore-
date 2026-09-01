@@ -10,6 +10,7 @@ import type {
   Product,
   Supplier,
   SupplierColumnConfig,
+  PresentationRule,
 } from "@/types/database";
 
 interface PriceCoreDB extends DBSchema {
@@ -18,7 +19,7 @@ interface PriceCoreDB extends DBSchema {
   products: {
     key: string;
     value: Product;
-    indexes: { bySupplierCode: [string, string]; bySupplier: string };
+    indexes: { bySupplierCode: [string, string]; bySupplier: string; bySupplierNormalizedCode: [string, string] };
   };
   equivalences: {
     key: string;
@@ -35,10 +36,11 @@ interface PriceCoreDB extends DBSchema {
   comparisonSessions: { key: string; value: ComparisonSession };
   priceChanges: { key: string; value: PriceChange; indexes: { bySession: string } };
   settings: { key: string; value: MatchingSettings };
+  presentationRules: { key: string; value: PresentationRule; indexes: { bySupplier: string } };
 }
 
 const DB_NAME = "pricecore";
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 let dbPromise: Promise<IDBPDatabase<PriceCoreDB>> | null = null;
 
@@ -70,19 +72,24 @@ export function getDB(): Promise<IDBPDatabase<PriceCoreDB>> {
           const s = db.createObjectStore("supplierColumnConfig", { keyPath: "id" });
           s.createIndex("bySupplier", "supplier_id");
         }
-        // v4: el catálogo pasa de ser una lista global (código único en TODA
-        // la base, lo que chocaba cuando dos proveedores usaban el mismo
-        // código) a una carpeta por proveedor (código único sólo dentro de
-        // ese proveedor). No hay forma de migrar productos viejos sin
-        // proveedor asignado, así que se recrea el store vacío — el catálogo
-        // se vuelve a importar, ya elegido el proveedor de cada carpeta.
-        if (db.objectStoreNames.contains("products")) {
-          db.deleteObjectStore("products");
-        }
-        {
+        // v4: sólo en una base anterior a v4 se recreaba el catálogo para pasar
+        // a códigos únicos por proveedor. Nunca volver a borrar el catálogo en
+        // migraciones posteriores: perder productos al actualizar sería inaceptable.
+        if (oldVersion < 4) {
+          if (db.objectStoreNames.contains("products")) db.deleteObjectStore("products");
           const s = db.createObjectStore("products", { keyPath: "id" });
           s.createIndex("bySupplierCode", ["supplier_id", "code"], { unique: true });
           s.createIndex("bySupplier", "supplier_id");
+        } else {
+          const s = transaction.objectStore("products");
+          if (!s.indexNames.contains("bySupplierCode")) s.createIndex("bySupplierCode", ["supplier_id", "code"], { unique: true });
+          if (!s.indexNames.contains("bySupplier")) s.createIndex("bySupplier", "supplier_id");
+        }
+        // v5: índices auxiliares para búsquedas rápidas y para evitar cargar
+        // catálogos completos sólo para filtrar por texto.
+        const productsStore = transaction.objectStore("products");
+        if (!productsStore.indexNames.contains("bySupplierNormalizedCode")) {
+          productsStore.createIndex("bySupplierNormalizedCode", ["supplier_id", "normalized_code"]);
         }
 
         let equivStore = db.objectStoreNames.contains("equivalences")
@@ -128,6 +135,10 @@ export function getDB(): Promise<IDBPDatabase<PriceCoreDB>> {
         if (!db.objectStoreNames.contains("settings")) {
           db.createObjectStore("settings", { keyPath: "id" });
         }
+        if (!db.objectStoreNames.contains("presentationRules")) {
+          const s = db.createObjectStore("presentationRules", { keyPath: "id" });
+          s.createIndex("bySupplier", "supplier_id");
+        }
       },
       // Esta pestaña ya tenía la base abierta en una versión vieja y otra
       // pestaña/ventana está pidiendo abrir una versión nueva: nos cerramos
@@ -164,6 +175,28 @@ export function nowISO(): string {
 // multi-store complejas: el volumen de datos de esta herramienta no las
 // necesita).
 // ---------------------------------------------------------------------------
+
+
+function normalizeCodeForDB(code: unknown): string {
+  return String(code ?? "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+export const presentationRulesRepo = {
+  async listForSupplier(supplierId: string): Promise<PresentationRule[]> {
+    const db = await getDB();
+    return db.getAllFromIndex("presentationRules", "bySupplier", supplierId);
+  },
+  async create(input: Omit<PresentationRule, "id" | "created_at" | "updated_at">): Promise<PresentationRule> {
+    const db = await getDB(); const now = nowISO();
+    const row = { ...input, id: newId(), created_at: now, updated_at: now };
+    await db.put("presentationRules", row); return row;
+  },
+  async update(id: string, patch: Partial<PresentationRule>): Promise<void> {
+    const db = await getDB(); const current = await db.get("presentationRules", id);
+    if (current) await db.put("presentationRules", { ...current, ...patch, updated_at: nowISO() });
+  },
+  async remove(id: string): Promise<void> { const db = await getDB(); await db.delete("presentationRules", id); },
+};
 
 export const discontinuedCodesRepo = {
   async has(supplierId: string, supplierCode: string): Promise<boolean> {
@@ -203,7 +236,20 @@ export const settingsRepo = {
   },
   async setThresholds(safeMin: number, reviewMin: number): Promise<void> {
     const db = await getDB();
-    await db.put("settings", { id: "thresholds", safe_min: safeMin, review_min: reviewMin });
+    const current = await db.get("settings", "thresholds");
+    await db.put("settings", { ...current, id: "thresholds", safe_min: safeMin, review_min: reviewMin });
+  },
+  async get(): Promise<MatchingSettings> {
+    const db = await getDB();
+    const record = await db.get("settings", "thresholds");
+    return record ?? { id: "thresholds", safe_min: 97, review_min: 50, max_candidates: 12, enable_code_family: true, enable_description: true, remember_column_mapping: true, auto_confirm_exact: true };
+  },
+  async save(patch: Partial<Omit<MatchingSettings, "id">>): Promise<MatchingSettings> {
+    const db = await getDB();
+    const current = await this.get();
+    const next = { ...current, ...patch, id: "thresholds" as const };
+    await db.put("settings", next);
+    return next;
   },
 };
 
@@ -236,9 +282,35 @@ export const suppliersRepo = {
   },
   async create(input: Omit<Supplier, "id" | "created_at" | "updated_at">): Promise<Supplier> {
     const db = await getDB();
-    const supplier: Supplier = { ...input, id: newId(), created_at: nowISO(), updated_at: nowISO() };
+    const now = nowISO();
+    const supplier: Supplier = { ...input, categories: input.categories ?? [], conditions: input.conditions ?? "", deleted_at: null, id: newId(), created_at: now, updated_at: now };
     await db.put("suppliers", supplier);
     return supplier;
+  },
+  async update(id: string, patch: Partial<Supplier>): Promise<Supplier> {
+    const db = await getDB();
+    const current = await db.get("suppliers", id);
+    if (!current) throw new Error("Proveedor no encontrado.");
+    const next: Supplier = { ...current, ...patch, updated_at: nowISO() };
+    await db.put("suppliers", next);
+    return next;
+  },
+  async archive(id: string): Promise<void> { await this.update(id, { active: false, deleted_at: nowISO() }); },
+  async restore(id: string): Promise<void> { await this.update(id, { active: true, deleted_at: null }); },
+  async hasHistory(id: string): Promise<boolean> {
+    const db = await getDB();
+    const [products, lists, sessions, eq] = await Promise.all([
+      db.getAllFromIndex("products", "bySupplier", id),
+      db.getAll("priceLists"),
+      db.getAll("comparisonSessions"),
+      db.getAllFromIndex("equivalences", "bySupplier", id),
+    ]);
+    return products.length > 0 || lists.some(x => x.supplier_id === id) || sessions.some(x => x.supplier_id === id) || eq.length > 0;
+  },
+  async remove(id: string): Promise<void> {
+    const db = await getDB();
+    if (await this.hasHistory(id)) throw new Error("Este proveedor tiene historial o catálogo. Se envió a la papelera en lugar de borrarlo definitivamente.");
+    await db.delete("suppliers", id);
   },
 };
 
@@ -272,9 +344,11 @@ export const productsRepo = {
   ): Promise<Product> {
     const db = await getDB();
     const existing = await db.getFromIndex("products", "bySupplierCode", [supplierId, input.code]);
+    const now = nowISO();
+    const normalized_code = normalizeCodeForDB(input.code);
     const record: Product = existing
-      ? { ...existing, ...input, supplier_id: supplierId, updated_at: nowISO() }
-      : { ...input, supplier_id: supplierId, id: newId(), created_at: nowISO(), updated_at: nowISO() };
+      ? { ...existing, ...input, normalized_code, supplier_id: supplierId, updated_at: now }
+      : { ...input, normalized_code, supplier_id: supplierId, id: newId(), created_at: now, updated_at: now };
     await db.put("products", record);
     return record;
   },
@@ -314,9 +388,10 @@ export const productsRepo = {
 
     const records = [...lastByCode.values()].map((input) => {
       const old = byCode.get(input.code);
+      const normalized_code = normalizeCodeForDB(input.code);
       return old
-        ? { ...old, ...input, supplier_id: supplierId, updated_at: now }
-        : { ...input, supplier_id: supplierId, id: newId(), created_at: now, updated_at: now };
+        ? { ...old, ...input, normalized_code, supplier_id: supplierId, updated_at: now }
+        : { ...input, normalized_code, supplier_id: supplierId, id: newId(), created_at: now, updated_at: now };
     });
 
     const tx = db.transaction("products", "readwrite");
@@ -338,12 +413,10 @@ export const productsRepo = {
    * siempre está resolviendo un ítem de UN proveedor puntual. */
   async search(supplierId: string, query: string, limit = 25): Promise<Product[]> {
     const db = await getDB();
-    const all = await db.getAllFromIndex("products", "bySupplier", supplierId);
     const q = query.trim().toLowerCase();
     if (!q) return [];
-    return all
-      .filter((p) => p.active && (p.code.toLowerCase().includes(q) || p.description.toLowerCase().includes(q)))
-      .slice(0, limit);
+    const all = await db.getAllFromIndex("products", "bySupplier", supplierId);
+    return all.filter((p) => p.active && (p.code.toLowerCase().includes(q) || p.description.toLowerCase().includes(q))).slice(0, limit);
   },
 };
 

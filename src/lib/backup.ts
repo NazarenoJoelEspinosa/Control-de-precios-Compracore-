@@ -1,7 +1,7 @@
 import { getDB } from "./db";
 
 interface BackupPayload {
-  version: 1;
+  version: 2;
   exported_at: string;
   suppliers: unknown[];
   supplierColumnConfig: unknown[];
@@ -11,6 +11,9 @@ interface BackupPayload {
   priceListItems: unknown[];
   comparisonSessions: unknown[];
   priceChanges: unknown[];
+  discontinuedCodes: unknown[];
+  settings: unknown[];
+  presentationRules: unknown[];
 }
 
 const STORES = [
@@ -22,6 +25,9 @@ const STORES = [
   "priceListItems",
   "comparisonSessions",
   "priceChanges",
+  "discontinuedCodes",
+  "settings",
+  "presentationRules",
 ] as const;
 
 /** Vuelca toda la base local a un objeto plano, listo para bajar como .json. */
@@ -32,7 +38,7 @@ export async function exportBackup(): Promise<BackupPayload> {
     payload[store] = await db.getAll(store);
   }
   return {
-    version: 1,
+    version: 2,
     exported_at: new Date().toISOString(),
     ...(payload as Omit<BackupPayload, "version" | "exported_at">),
   };
@@ -54,7 +60,7 @@ export function downloadBackup(payload: BackupPayload) {
  * conflicto por id, gana el registro importado.
  */
 export async function importBackup(payload: BackupPayload): Promise<void> {
-  if (payload.version !== 1) {
+  if (payload.version !== 1 && payload.version !== 2) {
     throw new Error("Formato de backup no reconocido.");
   }
   const db = await getDB();

@@ -2,90 +2,21 @@ import { useEffect, useState } from "react";
 import { settingsRepo } from "@/lib/db";
 
 export default function SettingsPage() {
-  const [safeMin, setSafeMin] = useState(97);
-  const [reviewMin, setReviewMin] = useState(50);
-  const [loading, setLoading] = useState(true);
-  const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
-    settingsRepo.getThresholds().then((t) => {
-      setSafeMin(t.safe_min);
-      setReviewMin(t.review_min);
-      setLoading(false);
-    });
-  }, []);
-
-  async function handleSave() {
-    await settingsRepo.setThresholds(safeMin, reviewMin);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
-  }
-
-  if (loading) return <p className="text-sm text-steel-600">Cargando...</p>;
-
-  const invalid = reviewMin >= safeMin;
-
-  return (
-    <div className="mx-auto max-w-lg">
-      <p className="eyebrow">Configuración</p>
-      <h1 className="mb-1 font-display text-2xl font-semibold text-ink">Umbrales de matching</h1>
-      <p className="mb-6 text-sm text-steel-600">
-        Definen cuándo un producto se considera "coincidencia segura" (automático) y cuándo se manda a "revisar" en
-        vez de descartarlo directamente como "no encontrado". Se aplican en la próxima comparación que proceses.
-      </p>
-
-      <div className="panel space-y-6 p-6">
-        <div>
-          <div className="mb-1 flex items-center justify-between">
-            <label className="text-sm font-medium text-steel-800">Coincidencia segura (automático) desde</label>
-            <span className="mono-num text-sm font-semibold text-success-500">{safeMin}%</span>
-          </div>
-          <input
-            type="range"
-            min={50}
-            max={100}
-            value={safeMin}
-            onChange={(e) => setSafeMin(Number(e.target.value))}
-            className="w-full accent-teal-500"
-          />
-          <p className="mt-1 text-xs text-steel-300">
-            Por debajo de esto, aunque el sistema encuentre un candidato, siempre pide confirmación humana.
-          </p>
-        </div>
-
-        <div>
-          <div className="mb-1 flex items-center justify-between">
-            <label className="text-sm font-medium text-steel-800">Mandar a "revisar" (en vez de "no encontrado") desde</label>
-            <span className="mono-num text-sm font-semibold text-amber-600">{reviewMin}%</span>
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={95}
-            value={reviewMin}
-            onChange={(e) => setReviewMin(Number(e.target.value))}
-            className="w-full accent-amber-400"
-          />
-          <p className="mt-1 text-xs text-steel-300">
-            Por debajo de esto, ni siquiera se muestra un candidato — directamente "no encontrado" para buscar a mano.
-          </p>
-        </div>
-
-        {invalid && (
-          <p className="rounded bg-danger-50 px-3 py-2 text-xs text-danger-500">
-            El umbral de "revisar" tiene que ser menor que el de "coincidencia segura".
-          </p>
-        )}
-
-        <button
-          disabled={invalid}
-          onClick={handleSave}
-          className="rounded bg-teal-500 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-600 disabled:opacity-40"
-        >
-          Guardar
-        </button>
-        {saved && <span className="ml-3 text-xs text-teal-600">Guardado.</span>}
-      </div>
+  const [safeMin,setSafeMin]=useState(97),[reviewMin,setReviewMin]=useState(50),[maxCandidates,setMaxCandidates]=useState(250);
+  const [codeFamily,setCodeFamily]=useState(true),[description,setDescription]=useState(true),[remember,setRemember]=useState(true),[autoExact,setAutoExact]=useState(true);
+  const [saved,setSaved]=useState(false),[loading,setLoading]=useState(true);
+  useEffect(()=>{settingsRepo.get().then(s=>{setSafeMin(s.safe_min);setReviewMin(s.review_min);setMaxCandidates(s.max_candidates ?? 250);setCodeFamily(s.enable_code_family ?? true);setDescription(s.enable_description ?? true);setRemember(s.remember_column_mapping ?? true);setAutoExact(s.auto_confirm_exact ?? true);setLoading(false)})},[]);
+  async function save(){await settingsRepo.save({safe_min:safeMin,review_min:reviewMin,max_candidates:maxCandidates,enable_code_family:codeFamily,enable_description:description,remember_column_mapping:remember,auto_confirm_exact:autoExact});setSaved(true);setTimeout(()=>setSaved(false),2000)}
+  if(loading)return <p className="text-sm text-steel-600">Cargando...</p>;
+  const invalid=reviewMin>=safeMin;
+  return <div className="mx-auto max-w-3xl"><p className="eyebrow">Control total</p><h1 className="font-display text-2xl font-semibold text-ink">Configuración</h1><p className="mt-1 mb-6 text-sm text-steel-600">La interfaz muestra poco por defecto, pero estas reglas te dejan decidir cómo trabaja CompraCore.</p>
+    <div className="space-y-4">
+      <section className="panel p-5"><h2 className="font-display font-semibold text-ink">🧠 Matching</h2><div className="mt-5 grid gap-5 md:grid-cols-2"><Slider label="Coincidencia segura" value={safeMin} min={50} max={100} suffix="%" onChange={setSafeMin}/><Slider label="Enviar a revisión desde" value={reviewMin} min={0} max={95} suffix="%" onChange={setReviewMin}/><Slider label="Máximo de candidatos fuzzy" value={maxCandidates} min={25} max={500} suffix="" onChange={setMaxCandidates}/></div>{invalid&&<p className="mt-4 rounded bg-danger-50 px-3 py-2 text-xs text-danger-500">El umbral de revisión debe ser menor que el seguro.</p>}</section>
+      <section className="panel p-5"><h2 className="font-display font-semibold text-ink">🔎 Cómo buscar</h2><div className="mt-4 space-y-3"><Toggle checked={codeFamily} onChange={setCodeFamily} label="Buscar familias de código" help="Detecta códigos que comparten una base y cambia sólo la presentación."/><Toggle checked={description} onChange={setDescription} label="Buscar por descripción" help="Usa palabras, marca, unidad y similitud cuando el código no alcanza."/><Toggle checked={autoExact} onChange={setAutoExact} label="Aceptar automáticamente códigos exactos" help="Los códigos exactos se consideran coincidencia segura."/></div></section>
+      <section className="panel p-5"><h2 className="font-display font-semibold text-ink">📄 Importación</h2><div className="mt-4"><Toggle checked={remember} onChange={setRemember} label="Recordar columnas por proveedor" help="La próxima lista intenta abrirse ya configurada como la última vez."/></div><p className="mt-4 text-xs text-steel-500">IVA y moneda siguen siendo configurables por proveedor. Si no querés usarlos en una comparación, simplemente podés ignorarlos.</p></section>
+      <div className="flex items-center justify-end gap-3"><span className="text-xs text-teal-600">{saved?"✓ Guardado":""}</span><button disabled={invalid} onClick={save} className="rounded bg-teal-500 px-5 py-2 text-sm font-semibold text-white hover:bg-teal-600 disabled:opacity-40">Guardar configuración</button></div>
     </div>
-  );
+  </div>;
 }
+function Slider({label,value,min,max,suffix,onChange}:{label:string;value:number;min:number;max:number;suffix:string;onChange:(n:number)=>void}){return <div><div className="mb-1 flex justify-between text-sm"><span>{label}</span><b className="mono-num">{value}{suffix}</b></div><input type="range" min={min} max={max} value={value} onChange={e=>onChange(Number(e.target.value))} className="w-full accent-teal-500"/></div>}
+function Toggle({checked,onChange,label,help}:{checked:boolean;onChange:(v:boolean)=>void;label:string;help:string}){return <label className="flex cursor-pointer items-start gap-3 rounded border border-steel-100 p-3 hover:bg-steel-50"><input type="checkbox" className="mt-1" checked={checked} onChange={e=>onChange(e.target.checked)}/><span><span className="block text-sm font-medium text-ink">{label}</span><span className="text-xs text-steel-500">{help}</span></span></label>}

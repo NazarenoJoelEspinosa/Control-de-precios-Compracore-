@@ -68,7 +68,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <div>
             <div className="mb-8 flex items-center gap-2 px-1">
               <div className="tag-cut h-6 w-6 bg-teal-500" />
-              <span className="font-display text-lg font-semibold text-ink">PriceCore</span>
+              <span className="font-display text-lg font-semibold text-ink">CompraCore</span>
             </div>
             <nav className="space-y-1">
               {NAV_ITEMS.map((item) => (

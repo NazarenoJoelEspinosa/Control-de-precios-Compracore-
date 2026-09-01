@@ -198,6 +198,11 @@ export interface MatchDeps {
    * productos) recalcularlo por cada ítem es lo que vuelve todo lento.
    */
   descriptionIndex: ProductIndexEntry[];
+  /** Índice invertido: token -> entradas que lo contienen. Reduce el fuzzy
+   * de catálogo completo a un conjunto pequeño de candidatos. */
+  tokenIndex?: Map<string, ProductIndexEntry[]>;
+  codeFamilyIndex?: Map<string, ProductIndexEntry[]>;
+  maxCandidates?: number;
 }
 
 export function matchItem(
@@ -241,12 +246,13 @@ export function matchItem(
   const normalizedItemCode = normalizeCodeForMatch(item.supplier_code);
   let bestFamily: { product: ProductForMatch; similarity: number } | null = null;
   if (normalizedItemCode.length >= 3) {
-    for (const entry of deps.descriptionIndex) {
+    // Sólo evaluamos candidatos cuyo código comparte prefijo. Para catálogos
+    // grandes esto evita comparar cada código contra todos los productos.
+    const familyCandidates = deps.codeFamilyIndex?.get(normalizedItemCode.slice(0, 5)) ?? [];
+    for (const entry of familyCandidates) {
       if (deps.rejectedEquivalences.has(`${equivKey}::${entry.product.id}`)) continue;
       const sim = codeFamilySimilarity(normalizedItemCode, entry.normalizedCode);
-      if (sim >= 0.6 && (!bestFamily || sim > bestFamily.similarity)) {
-        bestFamily = { product: entry.product, similarity: sim };
-      }
+      if (sim >= 0.6 && (!bestFamily || sim > bestFamily.similarity)) bestFamily = { product: entry.product, similarity: sim };
     }
   }
   if (bestFamily) {
@@ -275,12 +281,22 @@ export function matchItem(
   const queryText = [item.supplier_description, item.supplier_brand ?? "", item.supplier_unit ?? ""]
     .filter(Boolean)
     .join(" ");
-  const scored: CandidateScore[] = deps.descriptionIndex
+  const queryTokens = new Set(tokenize(queryText).map(stemToken));
+  const candidateMap = new Map<string, ProductIndexEntry>();
+  if (deps.tokenIndex && queryTokens.size) {
+    for (const token of queryTokens) {
+      for (const entry of deps.tokenIndex.get(token) ?? []) candidateMap.set(entry.product.id, entry);
+    }
+  }
+  // Si no hubo tokens compartidos, usar una muestra acotada. Esto mantiene
+  // el fallback útil sin volver al O(lista × catálogo).
+  const maxCandidates = deps.maxCandidates ?? 250;
+  const candidates = candidateMap.size > 0
+    ? [...candidateMap.values()].slice(0, maxCandidates)
+    : deps.descriptionIndex.slice(0, Math.min(maxCandidates, deps.descriptionIndex.length));
+  const scored: CandidateScore[] = candidates
     .filter((entry) => !deps.rejectedEquivalences.has(`${equivKey}::${entry.product.id}`))
-    .map((entry) => {
-      const score = scoreDescription(queryText, entry.text, entry.tokenSet, entry.trigramSet);
-      return { product: entry.product, score };
-    })
+    .map((entry) => ({ product: entry.product, score: scoreDescription(queryText, entry.text, entry.tokenSet, entry.trigramSet) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, 8);
 

@@ -21,6 +21,10 @@ export interface Supplier {
   vat_rate: number;
   default_currency: Currency;
   notes: string;
+  /** Datos libres para que el usuario configure cada proveedor sin depender de campos rígidos. */
+  categories?: string[];
+  conditions?: string;
+  deleted_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -52,6 +56,7 @@ export interface Product {
   active: boolean;
   created_at: string;
   updated_at: string;
+  normalized_code?: string;
 }
 
 export interface PriceList {
@@ -139,8 +144,26 @@ export interface DiscontinuedCode {
   created_at: string;
 }
 
+export interface PresentationRule {
+  id: string;
+  supplier_id: string;
+  supplier_label: string;
+  own_label: string;
+  factor: number;
+  supplier_pattern?: string;
+  own_pattern?: string;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface MatchingSettings {
   id: "thresholds";
   safe_min: number;
   review_min: number;
+  max_candidates?: number;
+  enable_code_family?: boolean;
+  enable_description?: boolean;
+  remember_column_mapping?: boolean;
+  auto_confirm_exact?: boolean;
 }
