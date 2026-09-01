@@ -60,7 +60,7 @@ export function getDBBlockedReason(): string | null {
 export function getDB(): Promise<IDBPDatabase<PriceCoreDB>> {
   if (!dbPromise) {
     dbPromise = openDB<PriceCoreDB>(DB_NAME, DB_VERSION, {
-      upgrade(db, _oldVersion, _newVersion, transaction) {
+     upgrade(db, oldVersion, newVersion, transaction) {
         // Cada creación está guardada por `contains` para que esto funcione
         // tanto en una base nueva (todo se crea de una) como en una que ya
         // tenía una versión anterior (sólo se agrega lo nuevo, sin tocar lo
