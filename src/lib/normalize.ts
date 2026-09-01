@@ -152,8 +152,13 @@ export function parseDecimal(value: unknown): number {
   const hasDot = s.includes(".");
 
   if (hasComma && hasDot) {
+    // Cuando aparecen ambos separadores, el que aparece último es el
+    // separador decimal. Esto también cubre listas argentinas que traen
+    // más de 2 decimales, por ejemplo "18.778,455" = 18778.455.
+    // No debemos decidir que la coma es de miles sólo porque tiene 3
+    // dígitos a la derecha: las planillas de proveedores pueden traer
+    // precios con precisión de 3 o más decimales.
     if (s.lastIndexOf(",") > s.lastIndexOf(".")) {
-      // "10.500,50" -> punto es separador de miles, coma es decimal
       s = s.split(".").join("").replace(",", ".");
     } else {
       // "10,500.50" -> coma es separador de miles
