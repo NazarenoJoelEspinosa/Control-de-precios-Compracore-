@@ -230,10 +230,16 @@ export default function ResultsPage() {
         </div>
       </div>
 
-      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-6">
+      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-7">
         <MiniStat label="Analizados" value={session.total_items} hint="ítems de la lista del proveedor" />
         <MiniStat label="Seguros" value={session.safe_matches} tone="text-success-500" />
         <MiniStat label="Revisar" value={session.review_items} tone="text-amber-600" />
+        <MiniStat
+          label="Presentación distinta"
+          value={session.presentation_diff_items}
+          tone="text-amber-600"
+          hint="mismo producto, otra presentación — también entra en 'Revisar pendientes'"
+        />
         <MiniStat
           label="No encontrados"
           value={session.not_found_items}

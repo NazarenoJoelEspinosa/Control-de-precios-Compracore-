@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { productsRepo } from "@/lib/db";
 import { confirmMatch, markDiscontinued, rejectSuggestion } from "@/lib/reviewActions";
 import { formatPrice } from "@/lib/normalize";
+import { buildProductIndexEntry, scoreDescription } from "@/lib/matching";
 import type { ComparisonSession, PriceListItem, Product } from "@/types/database";
 
 export default function MatchResolutionPanel({
@@ -20,6 +21,37 @@ export default function MatchResolutionPanel({
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Product[]>([]);
   const [busy, setBusy] = useState(false);
+  const [similar, setSimilar] = useState<{ product: Product; score: number }[] | null>(null);
+
+  // Para "no encontrado" no hay ninguna sugerencia del algoritmo — en vez de
+  // mandar directo a una caja de búsqueda vacía, calculamos acá mismo los
+  // candidatos más parecidos por descripción (aunque su score haya quedado
+  // por debajo del umbral de revisión) para dar un punto de partida.
+  useEffect(() => {
+    if (suggestedProduct) {
+      setSimilar(null);
+      return;
+    }
+    let cancelled = false;
+    productsRepo.listBySupplier(session.supplier_id).then((catalog) => {
+      if (cancelled) return;
+      const queryText = [item.supplier_description, item.supplier_brand, item.supplier_unit].filter(Boolean).join(" ");
+      const scored = catalog
+        .filter((p) => p.active)
+        .map((p) => {
+          const entry = buildProductIndexEntry(p);
+          return { product: p, score: scoreDescription(queryText, entry.text, entry.tokenSet, entry.trigramSet) };
+        })
+        .filter((c) => c.score >= 25) // por debajo de esto ya no aporta, sería ruido
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3);
+      setSimilar(scored);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestedProduct, item.id, session.supplier_id]);
 
   async function handleSearch(q: string) {
     setQuery(q);
@@ -112,7 +144,28 @@ export default function MatchResolutionPanel({
 
       {(!suggestedProduct || searching) && (
         <>
-          <p className="text-xs text-steel-600">Buscá en todo el catálogo por código o descripción:</p>
+          {!suggestedProduct && similar && similar.length > 0 && (
+            <div className="space-y-1">
+              <p className="text-xs text-steel-600">Quizás sea alguno de estos:</p>
+              {similar.map(({ product: p }) => (
+                <button
+                  key={p.id}
+                  disabled={busy}
+                  onClick={() => handleConfirm(p.id)}
+                  className="block w-full rounded border border-steel-200 bg-white p-2 text-left text-sm hover:border-teal-500 hover:bg-teal-50 disabled:opacity-60"
+                >
+                  <p className="font-medium text-ink">{p.description}</p>
+                  <p className="mono-num text-xs text-steel-600">
+                    {p.code} · {formatPrice(p.current_price, p.currency)}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
+          {!suggestedProduct && similar && similar.length === 0 && (
+            <p className="text-xs text-steel-300">No encontramos nada parecido por descripción — buscá a mano:</p>
+          )}
+          <p className="text-xs text-steel-600">Buscá en el catálogo de este proveedor por código o descripción:</p>
           <input
             autoFocus
             value={query}

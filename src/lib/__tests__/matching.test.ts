@@ -92,6 +92,22 @@ describe("codeFamilySimilarity", () => {
     const b = normalizeCodeForMatch("TOX99Z");
     expect(codeFamilySimilarity(a, b)).toBeLessThan(0.6);
   });
+
+  it("no confunde códigos secuenciales no relacionados (mismo largo, difieren en un dígito del medio)", () => {
+    // Regresión: la versión anterior (ratio de prefijo compartido) marcaba
+    // esto como "misma familia" porque "ABC1234" y "ABC1235" comparten un
+    // prefijo largo — pero son dos productos DISTINTOS con códigos
+    // correlativos, no la misma pieza en otra presentación.
+    const a = normalizeCodeForMatch("ABC1234");
+    const b = normalizeCodeForMatch("ABC1235");
+    expect(codeFamilySimilarity(a, b)).toBe(0);
+  });
+
+  it("no confunde códigos cortos que casualmente empiezan igual", () => {
+    const a = normalizeCodeForMatch("T0001");
+    const b = normalizeCodeForMatch("T0002");
+    expect(codeFamilySimilarity(a, b)).toBe(0);
+  });
 });
 
 describe("matchItem — flujo completo", () => {

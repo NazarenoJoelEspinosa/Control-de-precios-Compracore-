@@ -49,20 +49,38 @@ export function normalizeCodeForMatch(code: unknown): string {
 }
 
 /**
- * Similitud de "familia de código": cuánto comparten dos códigos normalizados
- * desde el principio. Pensado para detectar el caso real de ferretería donde
- * el proveedor usa el mismo código base pero le agrega un sufijo de cantidad
+ * Similitud de "familia de código": detecta cuando dos códigos son el MISMO
+ * código base con un sufijo de cantidad agregado al final
  * ("TOR8X1X100" vs "TOR8X1X1000") — el código NO es idéntico, pero es
  * evidentemente el mismo producto en otra presentación.
- * Devuelve un ratio 0-1 sobre la longitud del código más corto.
+ *
+ * A propósito es estricto, no un simple "se parecen": exige que el código
+ * más corto sea EXACTAMENTE el prefijo del más largo, y que lo que sobra al
+ * final sea sólo dígitos (una cantidad). Una versión más laxa (con ratio de
+ * prefijo compartido, sin exigir que uno sea prefijo real del otro) generaba
+ * falsos positivos graves con códigos secuenciales no relacionados
+ * (ej. "T0001" vs "T0002", o dos códigos de igual longitud que difieren en
+ * un dígito del medio) — dos productos totalmente distintos que por
+ * casualidad arrancan parecido NO son la misma familia, y tratarlos como tal
+ * inflaba la cola de revisión con artículos que no tenían nada que ver entre
+ * sí.
+ *
+ * Devuelve un ratio 0-1 (longitud del código corto sobre el largo) o 0 si no
+ * hay relación de familia.
  */
 export function codeFamilySimilarity(a: string, b: string): number {
   if (!a || !b) return 0;
   const minLen = Math.min(a.length, b.length);
-  if (minLen < 3) return 0;
-  let common = 0;
-  while (common < minLen && a[common] === b[common]) common++;
-  return common / minLen;
+  const maxLen = Math.max(a.length, b.length);
+  // Base compartida demasiado corta: muy fácil que coincida por azar entre
+  // productos que no tienen nada que ver.
+  if (minLen < 5) return 0;
+  const shorter = a.length <= b.length ? a : b;
+  const longer = a.length <= b.length ? b : a;
+  if (!longer.startsWith(shorter)) return 0;
+  const suffix = longer.slice(shorter.length);
+  if (suffix && !/^\d+$/.test(suffix)) return 0;
+  return minLen / maxLen;
 }
 
 export function tokenize(text: unknown): string[] {
