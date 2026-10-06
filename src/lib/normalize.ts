@@ -119,83 +119,56 @@ export function trigrams(text: unknown): Set<string> {
 export class InvalidPriceError extends Error {}
 
 export function parseDecimal(value: unknown): number {
-  if (value === null || value === undefined) {
-    throw new InvalidPriceError("Precio vacío");
-  }
+  if (value === null || value === undefined) throw new InvalidPriceError("Precio vacío");
   if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new InvalidPriceError("Precio no finito");
     return roundTo2(value);
   }
-
-  let raw = String(value).trim();
-  if (!raw) throw new InvalidPriceError("Precio vacío");
-
-  let cleaned = raw.toUpperCase();
-  for (const token of ["AR$", "ARS", "USD", "U$S", "$"]) {
-    cleaned = cleaned.split(token).join("");
-  }
-  cleaned = cleaned.replace(/\s+/g, "");
-
-  const letters = (cleaned.match(/[A-Z]/g) ?? []).length;
-  const digits = (cleaned.match(/[0-9]/g) ?? []).length;
-  if (digits === 0) throw new InvalidPriceError(`Precio inválido: ${value}`);
-  if (letters > 0 && digits <= 2) throw new InvalidPriceError(`Precio inválido: ${value}`);
-
-  let s = cleaned
-    .split("")
-    .filter((ch) => "0123456789,.-".includes(ch))
-    .join("");
-  if (!s || s === "-" || s === "." || s === ",") {
-    throw new InvalidPriceError(`Precio inválido: ${value}`);
-  }
-
-  const hasComma = s.includes(",");
-  const hasDot = s.includes(".");
-
-  if (hasComma && hasDot) {
-    // Cuando aparecen ambos separadores, el que aparece último es el
-    // separador decimal. Esto también cubre listas argentinas que traen
-    // más de 2 decimales, por ejemplo "18.778,455" = 18778.455.
-    // No debemos decidir que la coma es de miles sólo porque tiene 3
-    // dígitos a la derecha: las planillas de proveedores pueden traer
-    // precios con precisión de 3 o más decimales.
-    if (s.lastIndexOf(",") > s.lastIndexOf(".")) {
-      s = s.split(".").join("").replace(",", ".");
-    } else {
-      // "10,500.50" -> coma es separador de miles
-      s = s.split(",").join("");
+  // Admitir símbolos conocidos, nunca rescatar dígitos de textos como «Consultar 123».
+  let s = String(value).trim().toUpperCase();
+  for (const token of ["AR$", "ARS", "USD", "U$S", "$"]) s = s.split(token).join("");
+  s = s.replace(/\s+/g, "");
+  if (/^-?[.,]\d+$/.test(s)) return roundTo2(Number(s.replace(",", ".")));
+  if (!/^-?\d[\d.,]*$/.test(s)) throw new InvalidPriceError(`Precio inválido: ${value}`);
+  const comma = s.includes(","), dot = s.includes(".");
+  if (comma && dot) {
+    const decimal = s.lastIndexOf(",") > s.lastIndexOf(".") ? "," : ".";
+    const group = decimal === "," ? "." : ",";
+    const pieces = s.split(decimal);
+    if (pieces.length !== 2 || !/^\d+$/.test(pieces[1]) || !validGroupedInteger(pieces[0], group)) {
+      throw new InvalidPriceError(`Separadores inválidos: ${value}`);
     }
-  } else if (hasComma) {
-    const [left, right] = splitLast(s, ",");
-    if (right.length <= 2) {
-      s = `${left}.${right}`;
-    } else {
-      s = left + right;
-    }
-  } else if (hasDot) {
-    const [left, right] = splitLast(s, ".");
-    if (right.length === 3 && /^-?\d+$/.test(left)) {
-      // "1.500" con 3 dígitos después del punto -> separador de miles
-      s = left + right;
-    }
+    s = pieces[0].split(group).join("") + "." + pieces[1];
+  } else if (comma) {
+    const pieces = s.split(",");
+    if (pieces.length === 2 && /^\d+$/.test(pieces[1])) {
+      // En listas argentinas una coma decimal puede tener más de dos decimales.
+      s = pieces[0] + "." + pieces[1];
+    } else if (pieces.length > 2 && validGroupedInteger(s, ",")) s = pieces.join("");
+    else throw new InvalidPriceError(`Separadores inválidos: ${value}`);
+  } else if (dot) {
+    const pieces = s.split(".");
+    if (pieces.length > 2 || pieces[1].length === 3) {
+      if (!validGroupedInteger(s, ".")) throw new InvalidPriceError(`Separadores inválidos: ${value}`);
+      s = pieces.join("");
+    } else if (!/^\d+$/.test(pieces[1])) throw new InvalidPriceError(`Precio inválido: ${value}`);
   }
-
-  const dashCount = (s.match(/-/g) ?? []).length;
-  if (dashCount > 1 || (s.includes("-") && !s.startsWith("-"))) {
-    throw new InvalidPriceError(`Precio inválido: ${value}`);
-  }
-
   const num = Number(s);
-  if (Number.isNaN(num)) throw new InvalidPriceError(`Precio inválido: ${value}`);
+  if (!Number.isFinite(num)) throw new InvalidPriceError(`Precio inválido: ${value}`);
   return roundTo2(num);
 }
 
-function splitLast(s: string, sep: string): [string, string] {
-  const idx = s.lastIndexOf(sep);
-  return [s.slice(0, idx), s.slice(idx + 1)];
+function validGroupedInteger(value: string, separator: string): boolean {
+  const groups = value.replace(/^-/, "").split(separator);
+  return groups.length === 1 ? /^\d+$/.test(groups[0]) :
+    /^\d{1,3}$/.test(groups[0]) && groups.slice(1).every(g => /^\d{3}$/.test(g));
 }
 
 function roundTo2(n: number): number {
-  return Math.round((n + Number.EPSILON) * 100) / 100;
+  // Desplazar el exponente evita que 18.455 * 100 quede por debajo de 1845.5.
+  if (Number.isInteger(n)) return n;
+  const [mantissa, exponent = "0"] = n.toString().split("e");
+  return Number(`${Math.round(Number(`${mantissa}e${Number(exponent) + 2}`))}e-2`);
 }
 
 export function isValidPrice(val: unknown): boolean {

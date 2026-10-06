@@ -49,7 +49,7 @@ export default function HistoryPage() {
       ) : rows.length === 0 ? (
         <p className="text-sm text-steel-600">Todavía no hay comparaciones registradas.</p>
       ) : (
-        <div className="panel overflow-hidden">
+        <div className="panel overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="border-b border-steel-100 bg-steel-50 text-left text-xs font-medium text-steel-600">
               <tr>

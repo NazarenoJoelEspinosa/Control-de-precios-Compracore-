@@ -242,7 +242,7 @@ export const settingsRepo = {
   async get(): Promise<MatchingSettings> {
     const db = await getDB();
     const record = await db.get("settings", "thresholds");
-    return record ?? { id: "thresholds", safe_min: 97, review_min: 50, max_candidates: 12, enable_code_family: true, enable_description: true, remember_column_mapping: true, auto_confirm_exact: true };
+    return record ?? { id: "thresholds", safe_min: 97, review_min: 50, max_candidates: 250, enable_code_family: true, enable_description: true, remember_column_mapping: true, auto_confirm_exact: true };
   },
   async save(patch: Partial<Omit<MatchingSettings, "id">>): Promise<MatchingSettings> {
     const db = await getDB();

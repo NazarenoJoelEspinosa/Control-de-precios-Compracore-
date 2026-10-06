@@ -1,4 +1,6 @@
-import ExcelJS from "exceljs";
+import { priceIssue } from "./pricePolicy";
+import { convertPresentationPrice } from "./presentationConversions";
+import type ExcelJS from "exceljs";
 import type { PriceChange, PriceListItem, Product } from "@/types/database";
 
 export interface ExportRow {
@@ -8,7 +10,7 @@ export interface ExportRow {
 }
 
 const STATE_LABELS: Record<PriceListItem["match_state"], string> = {
-  safe: "Coincidencia segura",
+  safe: "Producto identificado",
   review: "Revisar",
   not_found: "No encontrado",
   new_product: "Nuevo producto",
@@ -52,9 +54,15 @@ const COLUMNS: ColumnDef[] = [
   { header: "Porcentaje", width: 12, key: "percent" },
   { header: "Estado", width: 22, key: "state" },
   { header: "Estado del cambio", width: 16, key: "change_status" },
+  { header: "Moneda proveedor", width: 18, key: "supplier_currency" },
+  { header: "Moneda catálogo", width: 18, key: "own_currency" },
+  { header: "Aviso de precio", width: 55, key: "price_issue" },
+  { header: "Conversión aplicada", width: 35, key: "conversion" },
+  { header: "Precio original proveedor", width: 25, key: "supplier_price" },
 ];
 
 async function buildWorkbook(rows: ExportRow[], title: string, sheetName: string): Promise<ExcelJS.Workbook> {
+  const ExcelJS = (await import("exceljs")).default;
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "PriceCore";
   workbook.created = new Date();
@@ -94,7 +102,9 @@ async function buildWorkbook(rows: ExportRow[], title: string, sheetName: string
   rows.forEach((row, idx) => {
     const excelRow = sheet.getRow(4 + idx);
     const oldPrice = row.change?.old_price ?? null;
-    const newPrice = row.change ? row.change.final_new_price ?? row.change.new_price : row.item.parsed_price;
+    const conversion = row.item.matched_presentations?.find(c => c.product_id === row.product?.id);
+    const issue = priceIssue(row.item, row.product);
+    const newPrice = issue ? null : row.change ? row.change.final_new_price ?? row.change.new_price : conversion && row.item.parsed_price !== null ? convertPresentationPrice(row.item.parsed_price, conversion.supplier_quantity, conversion.own_quantity) : row.item.parsed_price;
 
     excelRow.getCell(1).value = row.product?.code ?? "";
     excelRow.getCell(2).value = row.item.supplier_code;
@@ -105,6 +115,12 @@ async function buildWorkbook(rows: ExportRow[], title: string, sheetName: string
     excelRow.getCell(7).value = row.change?.diff_absolute ?? null;
     excelRow.getCell(8).value = row.change?.diff_percent ?? null;
     excelRow.getCell(9).value = STATE_LABELS[row.item.match_state];
+    excelRow.getCell(11).value = row.item.supplier_currency ?? row.product?.currency ?? "";
+    excelRow.getCell(12).value = row.product?.currency ?? "";
+    excelRow.getCell(13).value = issue ?? "";
+    excelRow.getCell(14).value = conversion ? `x${conversion.supplier_quantity} → x${conversion.own_quantity}; dividir por ${conversion.supplier_quantity / conversion.own_quantity}` : "";
+    excelRow.getCell(15).value = row.item.parsed_price ?? row.item.raw_price;
+    excelRow.getCell(15).numFmt = "#,##0.00";
     excelRow.getCell(10).value = row.change ? CHANGE_STATUS_LABELS[row.change.status] ?? row.change.status : "";
 
     [5, 6, 7].forEach((col) => {
@@ -153,7 +169,7 @@ export async function exportAllResults(rows: ExportRow[], fileName: string) {
 
 /** Exporta solo los cambios aprobados — el archivo que efectivamente se usa para actualizar el sistema de gestión. */
 export async function exportApprovedOnly(rows: ExportRow[], fileName: string) {
-  const approved = rows.filter((r) => r.change?.status === "approved");
+  const approved = rows.filter((r) => r.change?.status === "approved" && r.change.diff_absolute !== 0 && !priceIssue(r.item, r.product));
   const workbook = await buildWorkbook(approved, "PriceCore — Cambios aprobados", "Aprobados");
   await downloadWorkbook(workbook, fileName);
 }

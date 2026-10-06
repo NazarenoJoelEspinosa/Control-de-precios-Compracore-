@@ -69,6 +69,13 @@ export interface PriceList {
   created_at: string;
 }
 
+/** Cantidades confirmadas por el usuario, nunca inferidas del precio. */
+export interface PresentationConversion {
+  product_id: string;
+  supplier_quantity: number;
+  own_quantity: number;
+}
+
 export interface PriceListItem {
   id: string;
   price_list_id: string;
@@ -76,10 +83,15 @@ export interface PriceListItem {
   supplier_description: string;
   supplier_unit: string;
   supplier_brand: string;
+  supplier_currency?: Currency | null;
+  currency_error?: string | null;
+  comparison_error?: string | null;
   raw_price: string;
   parsed_price: number | null;
   parse_error: string | null;
   matched_product_id: string | null;
+  /** Snapshot de las presentaciones usadas en esta comparación. */
+  matched_presentations?: PresentationConversion[];
   match_level: MatchLevel | null;
   match_score: number | null;
   match_state: MatchState;
@@ -124,6 +136,8 @@ export interface PriceChange {
 }
 
 export interface Equivalence {
+  supplier_quantity?: number;
+  own_quantity?: number;
   id: string;
   supplier_id: string;
   supplier_code: string;

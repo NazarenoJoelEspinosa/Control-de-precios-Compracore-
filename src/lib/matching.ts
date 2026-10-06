@@ -203,6 +203,8 @@ export interface MatchDeps {
   tokenIndex?: Map<string, ProductIndexEntry[]>;
   codeFamilyIndex?: Map<string, ProductIndexEntry[]>;
   maxCandidates?: number;
+  enableCodeFamily?: boolean;
+  enableDescription?: boolean;
 }
 
 export function matchItem(
@@ -245,7 +247,7 @@ export function matchItem(
   // producto interno.
   const normalizedItemCode = normalizeCodeForMatch(item.supplier_code);
   let bestFamily: { product: ProductForMatch; similarity: number } | null = null;
-  if (normalizedItemCode.length >= 3) {
+  if (deps.enableCodeFamily !== false && normalizedItemCode.length >= 3) {
     // Sólo evaluamos candidatos cuyo código comparte prefijo. Para catálogos
     // grandes esto evita comparar cada código contra todos los productos.
     const familyCandidates = deps.codeFamilyIndex?.get(normalizedItemCode.slice(0, 5)) ?? [];
@@ -276,6 +278,11 @@ export function matchItem(
     // no lo forzamos acá, dejamos que el matching por descripción decida —
     // puede ser exactamente el mismo producto con un código apenas distinto.
   }
+
+  if (deps.enableDescription === false) return {
+    matchedProductId: null, matchLevel: "none", matchScore: null,
+    matchState: "not_found", presentationReason: "", candidates: [],
+  };
 
   // Nivel 4b: descripción (fuzzy), excluyendo productos rechazados para este código
   const queryText = [item.supplier_description, item.supplier_brand ?? "", item.supplier_unit ?? ""]

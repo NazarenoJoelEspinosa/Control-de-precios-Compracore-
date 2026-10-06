@@ -5,7 +5,7 @@ import { exportBackup, downloadBackup, readBackupFile, importBackup } from "@/li
 import { getDBBlockedReason } from "@/lib/db";
 
 const NAV_ITEMS = [
-  { to: "/", label: "Dashboard" },
+  { to: "/", label: "Resumen" },
   { to: "/comparisons/new", label: "Nueva comparación" },
   { to: "/catalog", label: "Catálogo" },
   { to: "/history", label: "Historial" },
@@ -15,6 +15,7 @@ const NAV_ITEMS = [
 ];
 
 export default function AppShell({ children }: { children: ReactNode }) {
+  const [mobileOpen, setMobileOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [dbBlocked, setDbBlocked] = useState<string | null>(null);
@@ -63,8 +64,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
           </button>
         </div>
       )}
+      <header className="flex items-center justify-between border-b bg-white px-4 py-3 md:hidden">
+        <span className="font-semibold">CompraCore</span>
+        <button aria-label="Abrir menú" aria-expanded={mobileOpen} onClick={() => setMobileOpen(v => !v)} className="rounded border px-3 py-2">Menú</button>
+      </header>
+      {mobileOpen && <button aria-label="Cerrar menú" onClick={() => setMobileOpen(false)} className="fixed inset-0 z-30 bg-ink/30 md:hidden" />}
       <div className="flex">
-        <aside className="sticky top-0 flex h-screen w-56 flex-col justify-between border-r border-steel-100 bg-white px-4 py-6">
+        <aside className={clsx("fixed inset-y-0 left-0 z-40 h-screen w-64 shrink-0 flex-col justify-between overflow-y-auto border-r border-steel-100 bg-white px-4 py-6 md:sticky md:top-0 md:flex md:w-56", mobileOpen ? "flex" : "hidden")}>
           <div>
             <div className="mb-8 flex items-center gap-2 px-1">
               <div className="tag-cut h-6 w-6 bg-teal-500" />
@@ -75,6 +81,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 <NavLink
                   key={item.to}
                   to={item.to}
+                  onClick={() => setMobileOpen(false)}
                   end={item.to === "/"}
                   className={({ isActive }) =>
                     clsx(
@@ -90,7 +97,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           </div>
 
           <div className="border-t border-steel-100 pt-4">
-            <p className="mb-2 px-1 text-xs text-steel-300">
+            <p className="mb-2 px-1 text-xs text-steel-600">
               Todo se guarda en este navegador. Hacé un backup de vez en cuando.
             </p>
             <button
@@ -118,7 +125,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             {status && <p className="mt-1 px-1 text-xs text-teal-600">{status}</p>}
           </div>
         </aside>
-        <main className="flex-1 px-8 py-8">{children}</main>
+        <main className="min-w-0 flex-1 px-4 py-5 md:px-8 md:py-8">{children}</main>
       </div>
     </div>
   );

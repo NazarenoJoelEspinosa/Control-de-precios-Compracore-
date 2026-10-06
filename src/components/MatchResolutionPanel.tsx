@@ -1,5 +1,6 @@
+import PresentationConversionEditor from "./PresentationConversionEditor";
 import { useEffect, useState } from "react";
-import { productsRepo } from "@/lib/db";
+import { productsRepo, settingsRepo } from "@/lib/db";
 import { confirmMatch, markDiscontinued, rejectSuggestion } from "@/lib/reviewActions";
 import { formatPrice } from "@/lib/normalize";
 import { buildProductIndexEntry, scoreDescription } from "@/lib/matching";
@@ -17,9 +18,11 @@ export default function MatchResolutionPanel({
   suggestedProduct: Product | null;
   onResolved: () => void;
 }) {
+  const [teaching, setTeaching] = useState(false);
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Product[]>([]);
+  const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [similar, setSimilar] = useState<{ product: Product; score: number }[] | null>(null);
 
@@ -33,8 +36,9 @@ export default function MatchResolutionPanel({
       return;
     }
     let cancelled = false;
-    productsRepo.listBySupplier(session.supplier_id).then((catalog) => {
+    Promise.all([productsRepo.listBySupplier(session.supplier_id), settingsRepo.get()]).then(([catalog, settings]) => {
       if (cancelled) return;
+      if (settings.enable_description === false) { setSimilar([]); return; }
       const queryText = [item.supplier_description, item.supplier_brand, item.supplier_unit].filter(Boolean).join(" ");
       const scored = catalog
         .filter((p) => p.active)
@@ -64,25 +68,27 @@ export default function MatchResolutionPanel({
 
   async function handleConfirm(productId: string) {
     setBusy(true);
-    await confirmMatch(session, item, productId);
-    setBusy(false);
-    onResolved();
+    setError("");
+    try { await confirmMatch(session, item, productId); onResolved(); }
+    catch (e) { setError(e instanceof Error ? e.message : "No se pudo confirmar."); }
+    finally { setBusy(false); }
   }
 
   async function handleReject() {
     setBusy(true);
-    await rejectSuggestion(session, item);
-    setBusy(false);
-    setSearching(true); // después de rechazar, lo natural es buscar a mano
-    onResolved();
+    setError("");
+    try { await rejectSuggestion(session, item); setSearching(true); onResolved(); }
+    catch (e) { setError(e instanceof Error ? e.message : "No se pudo rechazar."); }
+    finally { setBusy(false); }
   }
 
   async function handleDiscontinued() {
     if (!window.confirm("¿Marcar este código como discontinuado? No se va a volver a preguntar por él con este proveedor.")) return;
     setBusy(true);
-    await markDiscontinued(session, item);
-    setBusy(false);
-    onResolved();
+    setError("");
+    try { await markDiscontinued(session, item); onResolved(); }
+    catch (e) { setError(e instanceof Error ? e.message : "No se pudo guardar."); }
+    finally { setBusy(false); }
   }
 
   // Atajos de teclado — sólo cuando hay una sugerencia visible (no mientras
@@ -91,7 +97,7 @@ export default function MatchResolutionPanel({
     function onKeyDown(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
       const isTyping = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA";
-      if (isTyping || busy) return;
+      if (isTyping || busy || teaching) return;
       if (!suggestedProduct || searching) return;
 
       const key = e.key.toLowerCase();
@@ -109,13 +115,18 @@ export default function MatchResolutionPanel({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [suggestedProduct, searching, busy]);
+  }, [suggestedProduct, searching, busy, teaching]);
 
   return (
     <div className="space-y-3 rounded bg-steel-50 p-3">
-      {suggestedProduct && !searching && (
+      {error && <p role="alert" className="text-xs text-danger-500">{error}</p>}
+      <details onToggle={e => setTeaching(e.currentTarget.open)}>
+        <summary className="cursor-pointer text-sm font-semibold text-teal-600">Vendo este producto en otra presentación / varias presentaciones</summary>
+        {teaching && <PresentationConversionEditor session={session} item={item} onResolved={onResolved} />}
+      </details>
+      {!teaching && suggestedProduct && !searching && (
         <>
-          <p className="text-xs text-steel-600">¿Es este el producto correcto?</p>
+          <p className="text-xs text-steel-600">¿Es este el producto correcto? Confirmarlo deja su precio pendiente de aprobación.</p>
           <div className="rounded border border-steel-200 bg-white p-2 text-sm">
             <p className="font-medium text-ink">{suggestedProduct.description}</p>
             <p className="mono-num text-xs text-steel-600">
@@ -128,7 +139,7 @@ export default function MatchResolutionPanel({
               onClick={() => handleConfirm(suggestedProduct.id)}
               className="flex-1 rounded bg-success-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-success-500/90 disabled:opacity-60"
             >
-              Sí, es este <span className="opacity-70">(Enter)</span>
+              Confirmar producto <span className="opacity-70">(Enter)</span>
             </button>
             <button
               disabled={busy}
@@ -138,11 +149,11 @@ export default function MatchResolutionPanel({
               No, buscar otro <span className="opacity-70">(N)</span>
             </button>
           </div>
-          <p className="text-center text-xs text-steel-300">Atajos: Enter = sí · N = buscar otro · D = discontinuado</p>
+          <p className="text-center text-xs text-steel-600">Atajos: Enter = sí · N = buscar otro · D = discontinuado</p>
         </>
       )}
 
-      {(!suggestedProduct || searching) && (
+      {!teaching && (!suggestedProduct || searching) && (
         <>
           {!suggestedProduct && similar && similar.length > 0 && (
             <div className="space-y-1">
@@ -163,7 +174,7 @@ export default function MatchResolutionPanel({
             </div>
           )}
           {!suggestedProduct && similar && similar.length === 0 && (
-            <p className="text-xs text-steel-300">No encontramos nada parecido por descripción — buscá a mano:</p>
+            <p className="text-xs text-steel-600">No encontramos nada parecido por descripción — buscá a mano:</p>
           )}
           <p className="text-xs text-steel-600">Buscá en el catálogo de este proveedor por código o descripción:</p>
           <input
@@ -191,7 +202,7 @@ export default function MatchResolutionPanel({
             </div>
           )}
           {query.trim().length >= 2 && results.length === 0 && (
-            <p className="text-xs text-steel-300">No encontramos nada con ese texto en el catálogo.</p>
+            <p className="text-xs text-steel-600">No encontramos nada con ese texto en el catálogo.</p>
           )}
         </>
       )}

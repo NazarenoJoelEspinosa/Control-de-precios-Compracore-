@@ -136,7 +136,7 @@ export default function ReviewQueue() {
         <button onClick={() => navigate(`/comparisons/${session.id}`)} className="text-sm text-steel-600 hover:text-ink">
           ← Salir del panel
         </button>
-        <span className="text-xs text-steel-300">
+        <span className="text-xs text-steel-600">
           {remaining} de {items.length}
         </span>
       </div>

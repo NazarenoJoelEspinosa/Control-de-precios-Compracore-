@@ -1,4 +1,3 @@
-import * as XLSX from "xlsx";
 import Papa from "papaparse";
 
 export interface ParsedFile {
@@ -23,6 +22,7 @@ export async function parseSpreadsheetFile(file: File): Promise<ParsedFile> {
 }
 
 async function parseXlsx(file: File): Promise<ParsedFile> {
+  const XLSX = await import("xlsx");
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: "array" });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];

@@ -1,3 +1,6 @@
+import { priceIssue } from "./pricePolicy";
+import { comparisonStats } from "./comparisonStats";
+import { learnedPresentations, presentationChange, ruleConversion } from "./presentationConversions";
 import { normalizeCodeForMatch, normalizeText, parseDecimal } from "./normalize";
 import { buildProductIndexEntry, matchItem, type MatchDeps, type ProductForMatch, type MatchResult } from "./matching";
 import {
@@ -9,27 +12,13 @@ import {
   priceListsRepo,
   productsRepo,
   settingsRepo,
+  suppliersRepo,
+  presentationRulesRepo,
 } from "./db";
 import type { ComparisonSession, PriceListItem, Product } from "@/types/database";
 
-/**
- * Corre el pipeline completo de matching para una lista ya cargada. Todo
- * pasa en el navegador — no hay ningún servidor al que llamar.
- *
- * Importante para el rendimiento con listas grandes (miles de ítems): todo
- * lo que se puede calcular UNA vez para toda la corrida (tokenización del
- * catálogo, equivalencias y discontinuados del proveedor) se trae de una
- * sola vez ANTES del loop. Adentro del loop no hay ningún `await` a
- * IndexedDB ni ninguna re-tokenización — si se cuela un `await` ahí adentro
- * con 10.000 ítems, cada uno espera su propio viaje a la base y todo se
- * vuelve exasperantemente lento.
- *
- * Sólo los ítems que quedan en estado "safe" (match exacto, normalizado, o
- * equivalencia ya confirmada) generan un price_change y cuentan para
- * "subieron/bajaron/sin cambios". Los ítems en revisión NO cuentan todavía
- * — cuando el usuario los confirma (ver reviewActions.ts), ahí sí se crea
- * el cambio de precio y se suman a las estadísticas.
- */
+/** Índices y memoria se cargan una vez por lista. No hay consultas a IndexedDB
+ * dentro del loop; identificar y aprobar precios son estados independientes. */
 async function matchInWorker(supplierId: string, items: PriceListItem[], deps: MatchDeps, thresholds: { safeMin: number; reviewMin: number }): Promise<MatchResult[]> {
   if (typeof Worker === "undefined") {
     return items.map((item) => matchItem(supplierId, { supplier_code: item.supplier_code, supplier_description: item.supplier_description, supplier_brand: item.supplier_brand, supplier_unit: item.supplier_unit }, deps, thresholds));
@@ -54,7 +43,8 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
   // se iba en comparar contra productos irrelevantes).
   const supplierProducts = await productsRepo.listBySupplier(supplierId);
   const activeProducts = supplierProducts.filter((p) => p.active);
-  const rawThresholds = await settingsRepo.getThresholds();
+  const rawThresholds = await settingsRepo.get();
+  const supplier = await suppliersRepo.get(supplierId);
   const thresholds = { safeMin: rawThresholds.safe_min, reviewMin: rawThresholds.review_min };
 
   const byExactCode = new Map<string, ProductForMatch>();
@@ -86,14 +76,16 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
 
   // Traer de una sola consulta todo lo que el proveedor tiene aprendido
   // (equivalencias + discontinuados), en vez de una consulta por ítem.
-  const [equivalencesForSupplier, discontinuedForSupplier] = await Promise.all([
+  const [equivalencesForSupplier, discontinuedForSupplier, rules] = await Promise.all([
     equivalencesRepo.listForSupplier(supplierId),
     discontinuedCodesRepo.listForSupplier(supplierId),
+    presentationRulesRepo.listForSupplier(supplierId),
   ]);
   // Las claves deben coincidir EXACTAMENTE con las que usa matching.ts.
   // Antes se guardaban como `supplier_code`, pero el motor buscaba
   // `supplierId::supplierCode`, por lo que las equivalencias aprendidas
   // nunca se recuperaban en la siguiente comparación.
+  const conversionsByCode = learnedPresentations(equivalencesForSupplier, new Set(activeProducts.map(p => p.id)));
   const confirmedEquivalences = new Map<string, string>(
     equivalencesForSupplier
       .filter((e) => e.decision === "confirmed")
@@ -115,126 +107,59 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
     descriptionIndex,
     tokenIndex,
     codeFamilyIndex,
-    maxCandidates: 250,
-  };
-
-  const summary = {
-    total_items: 0,
-    safe_matches: 0,
-    review_items: 0,
-    not_found_items: 0,
-    new_products: 0,
-    presentation_diff_items: 0,
-    discontinued_items: 0,
-    price_increases: 0,
-    price_decreases: 0,
-    price_unchanged: 0,
-    approved_changes: 0,
+    maxCandidates: rawThresholds.max_candidates ?? 250,
+    enableCodeFamily: rawThresholds.enable_code_family !== false,
+    enableDescription: rawThresholds.enable_description !== false,
   };
 
   const updatedItems: PriceListItem[] = [];
   const changesToCreate: Parameters<typeof priceChangesRepo.bulkCreate>[0] = [];
-
   const workerResults = await matchInWorker(supplierId, items, deps, thresholds);
-
-  for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
-    const item = items[itemIndex];
-    summary.total_items++;
-
-    // Códigos ya marcados como discontinuados en una comparación anterior:
-    // no volvemos a preguntar, ni a correr el matching para nada.
-    if (discontinuedCodes.has(item.supplier_code)) {
-      summary.discontinued_items++;
-
-      // Aunque el artículo esté discontinuado, conservamos el precio
-      // parseado. Esto permite auditar/exportar exactamente qué informó el
-      // proveedor en esta lista.
-      let discontinuedParsedPrice: number | null = null;
-      let discontinuedParseError: string | null = null;
-      try {
-        discontinuedParsedPrice = parseDecimal(item.raw_price);
-      } catch {
-        discontinuedParseError = "No se pudo interpretar el precio";
-      }
-
-      updatedItems.push({
-        ...item,
-        parsed_price: discontinuedParsedPrice,
-        parse_error: discontinuedParseError,
-        matched_product_id: null,
-        match_level: "none",
-        match_state: "discontinued",
-        match_score: null,
-      });
-      continue;
-    }
-
-    let parsedPrice: number | null = null;
-    let parseError: string | null = null;
-    try {
-      parsedPrice = parseDecimal(item.raw_price);
-    } catch {
-      parseError = "No se pudo interpretar el precio";
-    }
-
-    const result = workerResults[itemIndex];
-
-    switch (result.matchState) {
-      case "safe":
-        summary.safe_matches++;
-        break;
-      case "review":
-        summary.review_items++;
-        break;
-      case "not_found":
-        summary.not_found_items++;
-        break;
-      case "presentation_diff":
-        summary.presentation_diff_items++;
-        break;
-    }
-
-    updatedItems.push({
-      ...item,
-      parsed_price: parsedPrice,
-      parse_error: parseError,
-      matched_product_id: result.matchedProductId,
-      match_level: result.matchLevel,
-      match_score: result.matchScore,
-      match_state: result.matchState,
-    });
-
-    // Sólo los matches "safe" generan cambio de precio y cuentan en las
-    // estadísticas de subas/bajas — todo lo demás espera confirmación humana.
-    if (result.matchState === "safe" && result.matchedProductId && parsedPrice !== null) {
+  for (let index = 0; index < items.length; index++) {
+    const original = items[index];
+    let parsedPrice: number | null = null, parseError: string | null = null;
+    try { parsedPrice = parseDecimal(original.raw_price); }
+    catch (error) { parseError = error instanceof Error ? error.message : "Precio inválido"; }
+    const result = workerResults[index];
+    const discontinued = discontinuedCodes.has(original.supplier_code);
+    const learned = discontinued ? undefined : conversionsByCode.get(original.supplier_code);
+    let conversions = learned;
+    const item: PriceListItem = { ...original, parsed_price: parsedPrice, parse_error: parseError,
+      supplier_currency: original.supplier_currency === undefined ? supplier?.default_currency : original.supplier_currency,
+      comparison_error: null, matched_presentations: undefined,
+      matched_product_id: discontinued ? null : result.matchedProductId,
+      match_level: discontinued ? "none" : result.matchLevel,
+      match_score: discontinued ? null : result.matchScore,
+      match_state: discontinued ? "discontinued" : result.matchState };
+    if (!discontinued && !conversions && result.matchedProductId) {
       const product = productsById.get(result.matchedProductId) as Product;
-      const diff = Math.round((parsedPrice - product.current_price) * 100) / 100;
-      if (diff > 0) summary.price_increases++;
-      else if (diff < 0) summary.price_decreases++;
-      else summary.price_unchanged++;
-
-      if (diff !== 0) {
-        summary.approved_changes++;
-        changesToCreate.push({
-          comparison_session_id: "", // se completa después de crear la sesión
-          price_list_item_id: item.id,
-          product_id: product.id,
-          old_price: product.current_price,
-          new_price: parsedPrice,
-          final_new_price: null,
-          old_currency: product.currency,
-          new_currency: product.currency,
-          diff_absolute: diff,
-          diff_percent: product.current_price ? Math.round((diff / product.current_price) * 10000) / 100 : null,
-          // Los matches "safe" se consideran aprobados automáticamente por
-          // diseño del flujo actual; los matches en revisión esperan acción
-          // humana en reviewActions.ts.
-          status: "approved",
-          decided_at: null,
-        });
-      }
+      try {
+        const conversion = ruleConversion(rules, product, item);
+        if (conversion) conversions = [conversion];
+      } catch (error) { item.comparison_error = error instanceof Error ? error.message : "Regla inválida"; }
+    }
+    if (conversions?.length) {
+      item.matched_presentations = conversions;
+      item.matched_product_id = conversions[0].product_id;
+      if (learned) { item.match_level = "equivalence"; item.match_score = 100; item.match_state = "safe"; }
+    }
+    updatedItems.push(item);
+    if (item.match_state !== "safe") continue;
+    const ids = conversions?.map(c => c.product_id) ?? [item.matched_product_id];
+    for (const id of ids) {
+      const product = id ? productsById.get(id) as Product | undefined : undefined;
+      if (!product || priceIssue(item, product)) continue;
+      const conversion = conversions?.find(c => c.product_id === id) ?? { product_id: product.id, supplier_quantity: 1, own_quantity: 1 };
+      const change = presentationChange(product, parsedPrice!, conversion);
+      // Identificación automática no equivale a aprobación manual del precio.
+      // Conservar el comportamiento existente por defecto sólo para códigos coincidentes.
+      change.status = rawThresholds.auto_confirm_exact !== false &&
+        ["exact_code", "normalized_code"].includes(item.match_level ?? "") ? "approved" : "pending";
+      if (change.diff_absolute !== 0 || conversions?.length) changesToCreate.push({ ...change,
+        comparison_session_id: "", price_list_item_id: item.id });
     }
   }
+  const summary = comparisonStats(updatedItems, changesToCreate, activeProducts);
 
   const session: ComparisonSession = await comparisonSessionsRepo.create({
     supplier_id: supplierId,

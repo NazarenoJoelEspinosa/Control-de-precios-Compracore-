@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { priceIssue } from "@/lib/pricePolicy";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import clsx from "clsx";
 import { comparisonSessionsRepo, priceChangesRepo, priceListItemsRepo, productsRepo } from "@/lib/db";
-import { MatchStateBadge, PriceDeltaBadge } from "@/components/ui/StatusBadges";
+import { MatchStateBadge, PriceDeltaBadge, ChangeStatusBadge } from "@/components/ui/StatusBadges";
+import PresentationConversionEditor from "@/components/PresentationConversionEditor";
+import { convertPresentationPrice } from "@/lib/presentationConversions";
 import MatchResolutionPanel from "@/components/MatchResolutionPanel";
 import { formatPrice } from "@/lib/normalize";
 import { scoreProductAgainstItem } from "@/lib/matching";
-import { confirmMatch } from "@/lib/reviewActions";
+import { confirmMatch, decidePriceChange, decidePriceChanges } from "@/lib/reviewActions";
 import { exportAllResults, exportApprovedOnly, type ExportRow } from "@/lib/exportResults";
 import type { ComparisonSession, PriceChange, PriceListItem, Product } from "@/types/database";
 
@@ -19,17 +22,25 @@ type FilterKey =
   | "presentation_diff"
   | "discontinued"
   | "increased"
-  | "decreased";
+  | "decreased"
+  | "price_error"
+  | "pending_price"
+  | "approved_price"
+  | "rejected_price";
 
 const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "all", label: "Todos" },
-  { key: "safe", label: "Coincidencias seguras" },
+  { key: "safe", label: "Productos identificados" },
   { key: "review", label: "Revisar" },
   { key: "not_found", label: "No encontrados" },
   { key: "presentation_diff", label: "Presentación distinta" },
   { key: "discontinued", label: "Discontinuados" },
   { key: "increased", label: "Subieron" },
   { key: "decreased", label: "Bajaron" },
+  { key: "price_error", label: "Precio / moneda con error" },
+  { key: "pending_price", label: "Precios pendientes" },
+  { key: "approved_price", label: "Precios aprobados" },
+  { key: "rejected_price", label: "Precios rechazados" },
 ];
 
 type SortKey = "none" | "price_desc" | "price_asc" | "score_desc" | "score_asc" | "percent_desc" | "percent_asc" | "name_asc" | "name_desc";
@@ -52,11 +63,6 @@ function numericSortValue(v: number | null, ascending: boolean): number {
   return v;
 }
 
-/** Un ítem cuenta como "asociado" (confiable) cuando su match está confirmado, no sólo sugerido. */
-function isAssociated(row: ExportRow): boolean {
-  return row.item.match_state === "safe";
-}
-
 export default function ResultsPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
@@ -71,6 +77,8 @@ export default function ResultsPage() {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<ExportRow | null>(null);
   const [exporting, setExporting] = useState<"all" | "approved" | null>(null);
+  const [actionError, setActionError] = useState("");
+  const [deciding, setDeciding] = useState(false);
   const [loading, setLoading] = useState(true);
   const [visibleCount, setVisibleCount] = useState(300);
 
@@ -90,17 +98,17 @@ export default function ResultsPage() {
 
     const items = await priceListItemsRepo.listByPriceList(sessionData.price_list_id);
     const changes = await priceChangesRepo.listBySession(sessionId);
-    const productIds = [...new Set(items.map((i) => i.matched_product_id).filter(Boolean))] as string[];
+    const productIds = [...new Set(items.flatMap((i) => i.matched_presentations?.map(c => c.product_id) ?? [i.matched_product_id]).filter(Boolean))] as string[];
     const products = await productsRepo.getMany(productIds);
 
     const productsById = new Map(products.map((p) => [p.id, p]));
-    const changesByItem = new Map(changes.map((c) => [c.price_list_item_id, c]));
+    const changesByPair = new Map(changes.map((c) => [`${c.price_list_item_id}::${c.product_id}`, c]));
 
-    const merged: ExportRow[] = items.map((item) => ({
-      item,
-      product: item.matched_product_id ? productsById.get(item.matched_product_id) ?? null : null,
-      change: changesByItem.get(item.id) ?? null,
-    }));
+    const merged: ExportRow[] = items.flatMap((item) => {
+      const ids = item.matched_presentations?.map(c => c.product_id) ?? [item.matched_product_id];
+      return ids.map(id => ({ item, product: id ? productsById.get(id) ?? null : null,
+        change: changesByPair.get(`${item.id}::${id}`) ?? null }));
+    });
 
     setRows(merged);
 
@@ -110,7 +118,7 @@ export default function ResultsPage() {
     // le haya quedado asociado (sea cual sea su match_state) cuenta como
     // "sí apareció".
     const catalogProducts = (await productsRepo.listBySupplier(sessionData.supplier_id)).filter((p) => p.active);
-    const matchedProductIds = new Set(items.map((i) => i.matched_product_id).filter(Boolean) as string[]);
+    const matchedProductIds = new Set(items.flatMap((i) => i.matched_presentations?.map(c => c.product_id) ?? [i.matched_product_id]).filter(Boolean) as string[]);
     setCatalogGaps(catalogProducts.filter((p) => !matchedProductIds.has(p.id)));
     setCatalogTotal(catalogProducts.length);
 
@@ -121,13 +129,14 @@ export default function ResultsPage() {
 
   const filtered = useMemo(() => {
     let result = rows.filter((row) => {
-      if (filter === "increased") {
-        return Boolean(row.change && row.change.diff_absolute > 0 && (row.change.status === "approved" || isAssociated(row)));
-      }
-      if (filter === "decreased") {
-        return Boolean(row.change && row.change.diff_absolute < 0 && (row.change.status === "approved" || isAssociated(row)));
-      }
-      if (!["all", "increased", "decreased"].includes(filter) && row.item.match_state !== filter) return false;
+      const issue = priceIssue(row.item, row.product);
+      if (filter === "increased" && !(row.change && row.change.diff_absolute > 0 && row.change.status !== "rejected" && !issue)) return false;
+      if (filter === "decreased" && !(row.change && row.change.diff_absolute < 0 && row.change.status !== "rejected" && !issue)) return false;
+      if (filter === "price_error" && !issue) return false;
+      if (filter === "pending_price" && !(row.change && row.change.diff_absolute !== 0 && ["pending", "edited"].includes(row.change.status) && !issue)) return false;
+      if (filter === "approved_price" && !(row.change?.status === "approved" && !issue)) return false;
+      if (filter === "rejected_price" && row.change?.status !== "rejected") return false;
+      if (!["all", "increased", "decreased", "price_error", "pending_price", "approved_price", "rejected_price"].includes(filter) && row.item.match_state !== filter) return false;
       if (search) {
         const q = search.toLowerCase();
         const haystack = `${row.item.supplier_code} ${row.item.supplier_description} ${row.product?.code ?? ""} ${row.product?.description ?? ""}`.toLowerCase();
@@ -171,13 +180,22 @@ export default function ResultsPage() {
   // porque no hay nada que decidir ahí — el proveedor tiene un artículo que
   // vos nunca cargaste a tu sistema. Esos se ven en la tarjeta/filtro "No
   // encontrados", no acá.
-  const pendingReviewCount = rows.filter((r) => ["review", "presentation_diff"].includes(r.item.match_state)).length;
+  const pendingReviewCount = new Set(rows.filter((r) => ["review", "presentation_diff"].includes(r.item.match_state)).map(r => r.item.id)).size;
 
+  const pendingPrices = filtered.filter(r => r.change && r.change.diff_absolute !== 0 && ["pending", "edited"].includes(r.change.status) && !priceIssue(r.item, r.product));
   async function decide(row: ExportRow, status: "approved" | "rejected") {
     if (!row.change) return;
-    const updated: PriceChange = { ...row.change, status, decided_at: new Date().toISOString() };
-    await priceChangesRepo.update(updated);
-    load();
+    setActionError(""); setDeciding(true);
+    try { await decidePriceChange(row.change.id, status); await load(); }
+    catch (error) { setActionError(error instanceof Error ? error.message : "No se pudo decidir el precio"); }
+    finally { setDeciding(false); }
+  }
+  async function approveFiltered() {
+    if (!pendingPrices.length || !window.confirm(`¿Aprobar los ${pendingPrices.length} precios pendientes del filtro actual?`)) return;
+    setActionError(""); setDeciding(true);
+    try { await decidePriceChanges(pendingPrices.map(r => r.change!.id), "approved"); await load(); }
+    catch (error) { setActionError(error instanceof Error ? error.message : "No se pudieron aprobar los precios"); }
+    finally { setDeciding(false); }
   }
 
   async function handleDeleteSession() {
@@ -192,14 +210,15 @@ export default function ResultsPage() {
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between">
+      {actionError && <p role="alert" className="mb-3 rounded bg-danger-50 p-3 text-sm text-danger-500">{actionError}</p>}
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="eyebrow">Comparación</p>
           <h1 className="font-display text-2xl font-semibold text-ink">
             {new Date(session.created_at).toLocaleDateString("es-AR")}
           </h1>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {catalogGaps.length > 0 && (
             <button
               onClick={() => setShowCatalogGaps(true)}
@@ -248,8 +267,8 @@ export default function ResultsPage() {
       </div>
 
       <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-7">
-        <MiniStat label="Analizados" value={session.total_items} hint="ítems de la lista del proveedor" />
-        <MiniStat label="Seguros" value={session.safe_matches} tone="text-success-500" />
+        <MiniStat label="Filas del proveedor" value={session.total_items} hint="ítems de la lista del proveedor" />
+        <MiniStat label="Productos identificados" value={session.safe_matches} tone="text-success-500" />
         <MiniStat label="Revisar" value={session.review_items} tone="text-amber-600" />
         <MiniStat
           label="Presentación distinta"
@@ -366,16 +385,19 @@ export default function ResultsPage() {
         />
       </div>
 
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-steel-600">Las coincidencias cuentan filas del proveedor. Los precios cuentan tus artículos, incluidas sus presentaciones.</p>
+        {pendingPrices.length > 0 && <button disabled={deciding} onClick={approveFiltered} className="rounded bg-success-500 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">Aprobar {pendingPrices.length} precios filtrados</button>}
+      </div>
       {(filter === "increased" || filter === "decreased") && (
-        <p className="mb-3 text-xs text-steel-300">
-          Mostrando sólo cambios ya aprobados o con match confirmado — los pendientes de revisión no cuentan acá
-          todavía.
+        <p className="mb-3 text-xs text-steel-600">
+          Mostrando precios de productos identificados. Incluye precios pendientes; excluye rechazados y errores de moneda o precio.
         </p>
       )}
 
-      <div className="panel overflow-hidden">
+      <div className="panel max-h-[70vh] overflow-auto">
         <table className="w-full text-sm">
-          <thead className="border-b border-steel-100 bg-steel-50 text-left text-xs font-medium text-steel-600">
+          <thead className="sticky top-0 z-10 border-b border-steel-100 bg-steel-50 text-left text-xs font-medium text-steel-600">
             <tr>
               <th className="px-3 py-2"></th>
               <th className="px-3 py-2">Producto</th>
@@ -390,17 +412,17 @@ export default function ResultsPage() {
           </thead>
           <tbody className="divide-y divide-steel-100">
             {visibleRows.map((row) => (
-              <tr key={row.item.id} className="hover:bg-steel-50">
+              <tr key={`${row.item.id}::${row.product?.id ?? "none"}`} className="hover:bg-steel-50">
                 <td className="px-3 py-2"></td>
                 <td className="max-w-xs truncate px-3 py-2 text-ink">
                   {row.product?.description ?? row.item.supplier_description}
                 </td>
                 <td className="mono-num px-3 py-2 text-steel-600">{row.product?.code ?? row.item.supplier_code}</td>
                 <td className="mono-num px-3 py-2 text-steel-600">
-                  {row.change ? formatPrice(row.change.old_price) : "—"}
+                  {row.product ? formatPrice(row.change?.old_price ?? row.product.current_price, row.product.currency) : "—"}
                 </td>
                 <td className="mono-num px-3 py-2 text-ink">
-                  {row.change ? formatPrice(row.change.final_new_price ?? row.change.new_price) : "—"}
+                  {priceIssue(row.item, row.product) ? "Revisar precio" : priceOf(row) !== null ? formatPrice(priceOf(row)!, row.product?.currency ?? row.item.supplier_currency ?? "ARS") : "—"}
                 </td>
                 <td className="px-3 py-2">
                   <PriceDeltaBadge percent={row.change?.diff_percent ?? null} />
@@ -409,31 +431,36 @@ export default function ResultsPage() {
                   {row.item.match_score !== null ? `${row.item.match_score.toFixed(0)}%` : "—"}
                 </td>
                 <td className="px-3 py-2">
-                  <MatchStateBadge state={row.item.match_state} />
+                  <div className="space-y-1">
+                    <MatchStateBadge state={row.item.match_state} />
+                    {priceIssue(row.item, row.product) ? <p className="max-w-xs text-xs font-medium text-danger-500">{priceIssue(row.item, row.product)}</p> : row.change?.diff_absolute === 0 ? <span className="block text-xs text-steel-600">Sin cambio de precio</span> : row.change ? <ChangeStatusBadge status={row.change.status} /> : row.product && row.item.match_state === "safe" ? <span className="block text-xs text-steel-600">Sin cambio de precio</span> : null}
+                  </div>
                 </td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex justify-end gap-1">
-                    {row.change && row.change.status === "approved" && (
+                    {row.change && row.change.status !== "rejected" && (
                       <button
+                        disabled={deciding}
                         onClick={() => decide(row, "rejected")}
                         className="rounded bg-danger-50 px-2 py-1 text-xs font-medium text-danger-500 hover:bg-danger-500 hover:text-white"
                       >
                         Rechazar
                       </button>
                     )}
-                    {row.change && row.change.status === "rejected" && (
+                    {row.change && row.change.diff_absolute !== 0 && ["pending", "edited"].includes(row.change.status) && !priceIssue(row.item, row.product) && <button disabled={deciding} onClick={() => decide(row, "approved")} className="rounded bg-success-500 px-2 py-1 text-xs font-medium text-white">Aprobar precio</button>}
+                    {row.change && row.change.status === "rejected" && !priceIssue(row.item, row.product) && (
                       <button
                         onClick={() => decide(row, "approved")}
                         className="rounded bg-steel-100 px-2 py-1 text-xs font-medium text-steel-600 hover:bg-steel-200"
                       >
-                        Reincluir
+                        Aprobar precio
                       </button>
                     )}
                     <button
                       onClick={() => setSelected(row)}
                       className="rounded px-2 py-1 text-xs font-medium text-steel-600 hover:bg-steel-100"
                     >
-                      Ver
+                      Revisar detalle
                     </button>
                   </div>
                 </td>
@@ -472,7 +499,8 @@ export default function ResultsPage() {
 
 function priceOf(row: ExportRow): number | null {
   if (row.change) return row.change.final_new_price ?? row.change.new_price;
-  return row.item.parsed_price;
+  const conversion = row.item.matched_presentations?.find(c => c.product_id === row.product?.id);
+  return conversion && row.item.parsed_price !== null ? convertPresentationPrice(row.item.parsed_price, conversion.supplier_quantity, conversion.own_quantity) : row.item.parsed_price;
 }
 function nameOf(row: ExportRow): string {
   return row.product?.description ?? row.item.supplier_description;
@@ -495,7 +523,7 @@ function MiniStat({
     <div className={clsx("panel p-3", clickable && "cursor-pointer transition hover:border-teal-500")} title={hint}>
       <p className="text-xs text-steel-600">
         {label}
-        {hint && <span className="ml-1 text-steel-300">ⓘ</span>}
+        {hint && <span className="ml-1 text-steel-600">ⓘ</span>}
       </p>
       <p className={clsx("mono-num text-xl font-semibold", tone ?? "text-ink")}>{value.toLocaleString("es-AR")}</p>
     </div>
@@ -513,15 +541,23 @@ function ProductDrawer({
   onClose: () => void;
   onResolved: () => void;
 }) {
+  const drawerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    drawerRef.current?.focus();
+    const close = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", close);
+    return () => { window.removeEventListener("keydown", close); previous?.focus(); };
+  }, [onClose]);
   const needsResolution = row.item.match_state !== "safe";
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-ink/20" onClick={onClose}>
-      <div className="h-full w-full max-w-md overflow-y-auto bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+      <div ref={drawerRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Detalle de producto y precio" className="h-full w-full max-w-md overflow-y-auto bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
         <div className="mb-4 flex items-start justify-between">
           <h2 className="font-display text-lg font-semibold text-ink">
             {row.product?.description ?? row.item.supplier_description}
           </h2>
-          <button onClick={onClose} className="text-steel-300 hover:text-ink">
+          <button aria-label="Cerrar detalle" onClick={onClose} className="text-steel-600 hover:text-ink">
             ✕
           </button>
         </div>
@@ -535,13 +571,21 @@ function ProductDrawer({
         <Section title="Proveedor">
           <Field label="Código" value={row.item.supplier_code} />
           <Field label="Descripción" value={row.item.supplier_description} />
-          <Field label="Precio" value={row.item.parsed_price !== null ? formatPrice(row.item.parsed_price) : row.item.raw_price} />
+          <Field label="Precio original" value={row.item.parsed_price !== null ? formatPrice(row.item.parsed_price, row.item.supplier_currency ?? row.product?.currency ?? "ARS") : row.item.raw_price} />
+          <Field label="Moneda proveedor" value={row.item.supplier_currency ?? "Según catálogo (lista anterior)"} />
+          {priceIssue(row.item, row.product) && <p role="alert" className="rounded bg-danger-50 p-2 text-xs text-danger-500">{priceIssue(row.item, row.product)}</p>}
         </Section>
 
-        <Section title="Matching">
+        {row.item.matched_presentations?.find(c => c.product_id === row.product?.id) && <Section title="Conversión aplicada">
+          {(() => { const c = row.item.matched_presentations!.find(c => c.product_id === row.product?.id)!; return <p className="text-sm">Proveedor x{c.supplier_quantity} → propio x{c.own_quantity}: dividir por {Number((c.supplier_quantity / c.own_quantity).toPrecision(8))}</p>; })()}
+        </Section>}
+        <Section title="Identificación del producto">
           <Field label="Score" value={row.item.match_score !== null ? `${row.item.match_score.toFixed(0)}%` : "—"} />
           <Field label="Método" value={matchLevelLabel(row.item.match_level)} />
-          <MatchStateBadge state={row.item.match_state} />
+          <div className="space-y-1">
+                    <MatchStateBadge state={row.item.match_state} />
+                    {priceIssue(row.item, row.product) ? <p className="max-w-xs text-xs font-medium text-danger-500">{priceIssue(row.item, row.product)}</p> : row.change?.diff_absolute === 0 ? <span className="block text-xs text-steel-600">Sin cambio de precio</span> : row.change ? <ChangeStatusBadge status={row.change.status} /> : row.product && row.item.match_state === "safe" ? <span className="block text-xs text-steel-600">Sin cambio de precio</span> : null}
+                  </div>
         </Section>
 
         {row.change && (
@@ -549,8 +593,11 @@ function ProductDrawer({
             <Field label="Anterior" value={formatPrice(row.change.old_price)} />
             <Field label="Nuevo" value={formatPrice(row.change.final_new_price ?? row.change.new_price)} />
             <PriceDeltaBadge percent={row.change.diff_percent} />
+            <ChangeStatusBadge status={row.change.status} />
           </Section>
         )}
+
+        {!needsResolution && <PresentationConversionEditor session={session} item={row.item} onResolved={onResolved} />}
 
         {needsResolution && (
           <MatchResolutionPanel session={session} item={row.item} suggestedProduct={row.product} onResolved={onResolved} />
@@ -655,7 +702,7 @@ function GapResolutionPanel({
         className="w-full rounded border border-steel-200 px-3 py-1.5 text-sm focus:border-teal-500"
       />
       {filtered.length === 0 ? (
-        <p className="text-xs text-steel-300">
+        <p className="text-xs text-steel-600">
           {notFoundItems.length === 0
             ? "No quedan ítems sin enganchar en esta lista para vincular."
             : "Nada se parece por descripción — probá filtrar a mano por código."}

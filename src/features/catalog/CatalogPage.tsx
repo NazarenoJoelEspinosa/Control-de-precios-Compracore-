@@ -1,3 +1,4 @@
+import { prepareCatalogImport } from "@/lib/catalogImport";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { getDB, productsRepo, suppliersRepo, type DuplicateCodeInFile } from "@/lib/db";
 import { parseSpreadsheetFile, type ParsedFile } from "@/lib/fileParsing";
@@ -78,7 +79,7 @@ export default function CatalogPage() {
                 <span className="flex items-center gap-2 font-display text-sm font-semibold text-ink">
                   📁 {s.name}
                 </span>
-                <span className="text-xs text-steel-300">
+                <span className="text-xs text-steel-600">
                   {count} producto{count !== 1 ? "s" : ""}
                 </span>
               </button>
@@ -194,7 +195,7 @@ function SupplierCatalogFolder({ supplier, onBack }: { supplier: Supplier; onBac
           </p>
         </div>
       ) : (
-        <div className="panel overflow-hidden">
+        <div className="panel overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="border-b border-steel-100 bg-steel-50 text-left text-xs font-medium text-steel-600">
               <tr>
@@ -212,7 +213,7 @@ function SupplierCatalogFolder({ supplier, onBack }: { supplier: Supplier; onBac
                   <td className="px-3 py-2 text-ink">{p.description}</td>
                   <td className="mono-num px-3 py-2 text-ink">{formatPrice(p.current_price, p.currency)}</td>
                   <td className="px-3 py-2">
-                    <span className={p.active ? "text-success-500" : "text-steel-300"}>
+                    <span className={p.active ? "text-success-500" : "text-steel-600"}>
                       {p.active ? "Activo" : "Inactivo"}
                     </span>
                   </td>
@@ -226,7 +227,7 @@ function SupplierCatalogFolder({ supplier, onBack }: { supplier: Supplier; onBac
             </tbody>
           </table>
           {filtered.length > 300 && (
-            <p className="px-4 py-2 text-center text-xs text-steel-300">
+            <p className="px-4 py-2 text-center text-xs text-steel-600">
               Mostrando los primeros 300 de {filtered.length} resultados — refiná la búsqueda para ver el resto.
             </p>
           )}
@@ -256,7 +257,7 @@ function AddProductForm({ supplierId, onSaved }: { supplierId: string; onSaved: 
         brand: "",
         unit,
         currency,
-        current_price: Number(price.replace(",", ".")) || 0,
+        current_price: parseDecimal(price),
         active: true,
       });
       setCode("");
@@ -309,6 +310,8 @@ function AddProductForm({ supplierId, onSaved }: { supplierId: string; onSaved: 
 function EditProductForm({ product, onClose, onSaved }: { product: Product; onClose: () => void; onSaved: () => void }) {
   const [description, setDescription] = useState(product.description);
   const [price, setPrice] = useState(String(product.current_price));
+  const [error, setError] = useState("");
+  const [currency, setCurrency] = useState(product.currency);
   const [unit, setUnit] = useState(product.unit);
   const [active, setActive] = useState(product.active);
   const [saving, setSaving] = useState(false);
@@ -316,23 +319,27 @@ function EditProductForm({ product, onClose, onSaved }: { product: Product; onCl
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setSaving(true);
+    setError("");
+    try {
     const db = await getDB();
     await db.put("products", {
       ...product,
+      currency,
       description: description.trim(),
       unit,
-      current_price: Number(price.replace(",", ".")) || 0,
+      current_price: parseDecimal(price),
       active,
       updated_at: new Date().toISOString(),
     });
-    setSaving(false);
     onSaved();
+    } catch (e) { setError(e instanceof Error ? e.message : "No se pudo guardar"); }
+    finally { setSaving(false); }
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20" onClick={onClose}>
       <form onSubmit={handleSubmit} className="panel w-full max-w-md space-y-3 p-5" onClick={(e) => e.stopPropagation()}>
-        <p className="mono-num text-xs text-steel-300">{product.code}</p>
+        <p className="mono-num text-xs text-steel-600">{product.code}</p>
         <div>
           <label className="mb-1 block text-xs font-medium text-steel-800">Descripción</label>
           <input value={description} onChange={(e) => setDescription(e.target.value)} className="w-full rounded border border-steel-200 px-3 py-2 text-sm focus:border-teal-500" />
@@ -347,6 +354,8 @@ function EditProductForm({ product, onClose, onSaved }: { product: Product; onCl
             <input value={price} onChange={(e) => setPrice(e.target.value)} className="w-full rounded border border-steel-200 px-3 py-2 text-sm focus:border-teal-500" />
           </div>
         </div>
+        <label className="block text-sm">Moneda del artículo<select value={currency} onChange={e => setCurrency(e.target.value as "ARS" | "USD")} className="field-control ml-2"><option value="ARS">ARS</option><option value="USD">USD</option></select></label>
+        {error && <p role="alert" className="text-sm text-danger-500">{error}</p>}
         <label className="flex items-center gap-2 text-sm text-steel-800">
           <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
           Activo (participa en el matching)
@@ -364,19 +373,13 @@ function EditProductForm({ product, onClose, onSaved }: { product: Product; onCl
   );
 }
 
-function parsePriceForImport(value: unknown): number {
-  try {
-    return parseDecimal(value);
-  } catch {
-    return 0;
-  }
-}
-
 function ImportCatalogForm({ supplierId, onDone }: { supplierId: string; onDone: () => void }) {
   const [parsed, setParsed] = useState<ParsedFile | null>(null);
   const [mapping, setMapping] = useState<ColumnMapping>({});
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fallbackCurrency, setFallbackCurrency] = useState<"ARS" | "USD">("ARS");
+  useEffect(() => { suppliersRepo.get(supplierId).then(s => setFallbackCurrency(s?.default_currency ?? "ARS")); }, [supplierId]);
   const [duplicates, setDuplicates] = useState<DuplicateCodeInFile[] | null>(null);
 
   async function handleFile(file: File) {
@@ -386,28 +389,11 @@ function ImportCatalogForm({ supplierId, onDone }: { supplierId: string; onDone:
     setDuplicates(null);
   }
 
-  const products = useMemo(() => {
-    if (!parsed) return [];
-    return parsed.rows.flatMap((row) => {
-      const code = String(row[mapping.code ?? ""] ?? "").trim();
-      if (!code) return [];
-      return [
-        {
-          code,
-          description: String(row[mapping.description ?? ""] ?? "").trim(),
-          brand: String(row[mapping.brand ?? ""] ?? "").trim(),
-          unit: String(row[mapping.unit ?? ""] ?? "").trim(),
-          currency: "ARS" as const,
-          current_price: parsePriceForImport(row[mapping.price ?? ""]),
-          active: true,
-        },
-      ];
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [parsed, mapping.code, mapping.description, mapping.brand, mapping.unit, mapping.price]);
+  const { products, errors: rowErrors, skipped } = useMemo(() =>
+    prepareCatalogImport(parsed?.rows ?? [], mapping, fallbackCurrency), [parsed, mapping, fallbackCurrency]);
 
   async function handleImport() {
-    if (!parsed) return;
+    if (!parsed || rowErrors.length) return;
     setImporting(true);
     setError(null);
     try {
@@ -435,6 +421,7 @@ function ImportCatalogForm({ supplierId, onDone }: { supplierId: string; onDone:
         <strong> dentro de esta carpeta</strong> se actualizan; los que no existan se agregan. No afecta el catálogo
         de otros proveedores.
       </p>
+      {error && <p role="alert" className="text-sm text-danger-500">{error}</p>}
       {!parsed ? (
         <label className="flex cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-steel-200 px-6 py-8 text-center hover:border-teal-500">
           <input
@@ -443,7 +430,7 @@ function ImportCatalogForm({ supplierId, onDone }: { supplierId: string; onDone:
             className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];
-              if (f) handleFile(f);
+              if (f) handleFile(f).catch(e => setError(e instanceof Error ? e.message : "No se pudo leer el archivo"));
             }}
           />
           <span className="text-sm font-medium text-ink">Hacé click para elegir un archivo</span>
@@ -451,11 +438,11 @@ function ImportCatalogForm({ supplierId, onDone }: { supplierId: string; onDone:
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            {(["code", "description", "price", "unit"] as const).map((field) => (
+            {(["code", "description", "price", "unit", "currency"] as const).map((field) => (
               <div key={field}>
                 <label className="mb-1 block text-xs font-medium text-steel-800">
-                  {{ code: "Código", description: "Descripción", price: "Precio", unit: "Unidad" }[field]}
-                  {field !== "unit" && <span className="text-danger-500"> *</span>}
+                  {{ code: "Código", description: "Descripción", price: "Precio", unit: "Unidad", currency: "Moneda" }[field]}
+                  {field !== "unit" && field !== "currency" && <span className="text-danger-500"> *</span>}
                 </label>
                 <select
                   value={mapping[field] ?? ""}
@@ -472,7 +459,9 @@ function ImportCatalogForm({ supplierId, onDone }: { supplierId: string; onDone:
               </div>
             ))}
           </div>
-          {error && <p className="text-sm text-danger-500">{error}</p>}
+          <label className="block text-sm">Moneda si no hay columna de moneda<select value={fallbackCurrency} onChange={e => setFallbackCurrency(e.target.value as "ARS" | "USD")} className="field-control ml-2"><option value="ARS">ARS</option><option value="USD">USD</option></select></label>
+          {!!rowErrors.length && <div role="alert" className="rounded bg-danger-50 p-3 text-sm text-danger-500"><p>Corregí estas filas antes de importar. No se reemplazan precios inválidos por cero.</p><ul className="mt-2 list-inside list-disc">{rowErrors.slice(0, 10).map((message, i) => <li key={i}>{message}</li>)}</ul>{rowErrors.length > 10 && <p>Y {rowErrors.length - 10} filas más.</p>}</div>}
+          {!!skipped && <p className="text-xs text-steel-600">Se omiten {skipped} filas sin código.</p>}
           {duplicates && duplicates.length > 0 && (
             <div className="rounded border border-amber-400 bg-amber-50 p-3 text-sm text-amber-600">
               <p className="font-medium">
@@ -498,11 +487,11 @@ function ImportCatalogForm({ supplierId, onDone }: { supplierId: string; onDone:
           )}
           {!duplicates && (
             <button
-              disabled={!requiredOk || importing}
+              disabled={!requiredOk || importing || rowErrors.length > 0 || !products.length}
               onClick={handleImport}
               className="rounded bg-teal-500 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-600 disabled:opacity-40"
             >
-              {importing ? "Importando..." : `Importar ${parsed.rows.length} productos`}
+              {importing ? "Importando..." : `Importar ${products.length} productos`}
             </button>
           )}
         </>

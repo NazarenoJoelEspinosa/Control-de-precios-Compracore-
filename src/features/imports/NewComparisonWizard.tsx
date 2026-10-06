@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import clsx from "clsx";
 import { priceListItemsRepo, priceListsRepo, productsRepo, supplierColumnConfigRepo, suppliersRepo, settingsRepo } from "@/lib/db";
 import { runMatchingForPriceList } from "@/lib/runMatching";
+import { parseCurrency } from "@/lib/pricePolicy";
 import { parseSpreadsheetFile, type ParsedFile } from "@/lib/fileParsing";
 import { suggestColumnMapping, type ColumnMapping } from "@/lib/columnMapping";
 import type { Supplier } from "@/types/database";
@@ -41,6 +42,8 @@ export default function NewComparisonWizard() {
   }, [supplierId]);
 
   async function handleSupplierFile(file: File) {
+    setSupplierParsed(null);
+    setProcessError(null);
     setSupplierFile(file);
     const parsed = await parseSpreadsheetFile(file);
     setSupplierParsed(parsed);
@@ -104,6 +107,8 @@ export default function NewComparisonWizard() {
           supplier_description: String(row[mapping.description ?? ""] ?? "").trim(),
           supplier_unit: String(row[mapping.unit ?? ""] ?? "").trim(),
           supplier_brand: String(row[mapping.brand ?? ""] ?? "").trim(),
+          supplier_currency: parseCurrency(row[mapping.currency ?? ""], suppliers.find(s => s.id === supplierId)?.default_currency ?? "ARS").currency,
+          currency_error: parseCurrency(row[mapping.currency ?? ""], suppliers.find(s => s.id === supplierId)?.default_currency ?? "ARS").error,
           raw_price: String(row[mapping.price ?? ""] ?? ""),
           parsed_price: null,
           parse_error: null,
@@ -144,12 +149,12 @@ export default function NewComparisonWizard() {
             <div
               className={clsx(
                 "flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
-                idx <= step ? "bg-teal-500 text-white" : "bg-steel-100 text-steel-300"
+                idx <= step ? "bg-teal-500 text-white" : "bg-steel-100 text-steel-600"
               )}
             >
               {idx + 1}
             </div>
-            <span className={clsx("hidden text-xs md:block", idx === step ? "text-ink font-medium" : "text-steel-300")}>
+            <span className={clsx("hidden text-xs md:block", idx === step ? "text-ink font-medium" : "text-steel-600")}>
               {label}
             </span>
             {idx < STEPS.length - 1 && <div className="h-px flex-1 bg-steel-100" />}
@@ -157,15 +162,16 @@ export default function NewComparisonWizard() {
         ))}
       </ol>
 
+      {processError && step !== 3 && <p role="alert" className="mb-3 rounded bg-danger-50 p-3 text-sm text-danger-500">{processError}</p>}
       <div className="panel p-6">
         {step === 0 && (
-          <StepSupplier suppliers={suppliers} value={supplierId} onChange={setSupplierId} onNext={() => setStep(1)} />
+          <StepSupplier suppliers={suppliers} value={supplierId} onChange={id => { setSupplierId(id); setSupplierFile(null); setSupplierParsed(null); setMapping({}); setMappingRemembered(false); }} onNext={() => setStep(1)} />
         )}
 
         {step === 1 && (
           <StepUpload
             file={supplierFile}
-            onFile={handleSupplierFile}
+            onFile={file => { handleSupplierFile(file).catch(e => setProcessError(e instanceof Error ? e.message : "No se pudo leer el archivo")); }}
             onBack={() => setStep(0)}
             onNext={() => setStep(2)}
             nextDisabled={!supplierParsed}
@@ -279,7 +285,7 @@ function StepUpload({
           }}
         />
         <span className="text-sm font-medium text-ink">{file ? file.name : "Hacé click para elegir un archivo"}</span>
-        <span className="mt-1 text-xs text-steel-300">XLSX, XLS o CSV</span>
+        <span className="mt-1 text-xs text-steel-600">XLSX, XLS o CSV</span>
       </label>
       <div className="mt-6 flex justify-between">
         <button onClick={onBack} className="rounded px-4 py-2 text-sm font-medium text-steel-600 hover:bg-steel-50">
@@ -360,7 +366,7 @@ function StepMapping({
       {!requiredOk && (
         <p className="mt-3 text-xs text-amber-600">Código, descripción y precio son obligatorios para continuar.</p>
       )}
-      <div className="mt-6 overflow-hidden rounded border border-steel-100">
+      <div className="mt-6 overflow-x-auto rounded border border-steel-100">
         <div className="border-b border-steel-100 bg-steel-50 px-3 py-2 text-xs font-semibold text-steel-700">Vista previa de la lista</div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[650px] text-xs"><thead className="border-b border-steel-100"><tr>

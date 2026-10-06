@@ -78,7 +78,7 @@ export async function importBackup(payload: BackupPayload): Promise<void> {
 export async function readBackupFile(file: File): Promise<BackupPayload> {
   const text = await file.text();
   const parsed = JSON.parse(text);
-  if (!parsed || typeof parsed !== "object" || parsed.version !== 1) {
+  if (!parsed || typeof parsed !== "object" || (parsed.version !== 1 && parsed.version !== 2)) {
     throw new Error("El archivo no parece ser un backup válido de PriceCore.");
   }
   return parsed as BackupPayload;

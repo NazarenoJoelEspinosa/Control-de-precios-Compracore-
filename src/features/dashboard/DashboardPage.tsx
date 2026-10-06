@@ -28,7 +28,7 @@ export default function DashboardPage() {
     (acc, s) => ({
       analyzed: acc.analyzed + s.total_items,
       safe: acc.safe + s.safe_matches,
-      review: acc.review + s.review_items,
+      review: acc.review + s.review_items + s.presentation_diff_items,
       notFound: acc.notFound + s.not_found_items,
       increases: acc.increases + s.price_increases,
       decreases: acc.decreases + s.price_decreases,
@@ -42,7 +42,7 @@ export default function DashboardPage() {
       <div className="mb-6 flex items-center justify-between">
         <div>
           <p className="eyebrow">Resumen</p>
-          <h1 className="font-display text-2xl font-semibold text-ink">Dashboard</h1>
+          <h1 className="font-display text-2xl font-semibold text-ink">Resumen</h1>
         </div>
         <Link
           to="/comparisons/new"
@@ -69,10 +69,11 @@ export default function DashboardPage() {
         </div>
       ) : (
         <>
+          <p className="mb-3 text-xs text-steel-600">Totales de las últimas {sessions.length} comparaciones. Identificados cuenta filas del proveedor; subas/bajas cuentan artículos propios y excluyen precios rechazados.</p>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <StatCard label="Productos analizados" value={totals.analyzed} />
-            <StatCard label="Coincidencias automáticas" value={totals.safe} tone="text-success-500" />
-            <StatCard label="Para revisar" value={totals.review} tone="text-amber-600" />
+            <StatCard label="Productos identificados" value={totals.safe} tone="text-success-500" />
+            <StatCard label="Identidad por revisar" value={totals.review} tone="text-amber-600" />
             <StatCard label="No encontrados" value={totals.notFound} tone="text-danger-500" />
             <StatCard label="Subieron" value={totals.increases} tone="text-danger-500" />
             <StatCard label="Bajaron" value={totals.decreases} tone="text-success-500" />
@@ -87,7 +88,7 @@ export default function DashboardPage() {
                   <Link to={`/comparisons/${s.id}`} className="flex flex-1 items-center gap-6">
                     <span className="text-ink">{new Date(s.created_at).toLocaleDateString("es-AR")}</span>
                     <span className="text-steel-600">{s.total_items} productos</span>
-                    <span className="text-steel-600">{s.review_items} para revisar</span>
+                    <span className="text-steel-600">{s.review_items + s.presentation_diff_items} identidades por revisar</span>
                     <span className={s.status === "open" ? "text-amber-600" : "text-success-500"}>
                       {s.status === "open" ? "Abierta" : "Cerrada"}
                     </span>

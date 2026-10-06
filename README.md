@@ -1,8 +1,8 @@
-# PriceCore — MVP (versión local, sin backend)
+# CompraCore — MVP (versión local, sin backend)
 
 Herramienta interna para comparar listas de precios de proveedores contra el catálogo propio, con matching por niveles, revisión humana obligatoria para lo dudoso, y exportación a Excel para actualizar el sistema de gestión manualmente. Corre 100% en el navegador — no hay servidor, no hay login, no hay nube.
 
-Ver `/PriceCore_Fase1_Analisis.md` para el análisis original de CompraCore.
+Ver [MEJORAS.md](MEJORAS.md) para las correcciones actuales y [PRESENTACIONES.md](PRESENTACIONES.md) para enseñar conversiones por artículo.
 
 ## Puesta en marcha
 
@@ -11,17 +11,17 @@ npm install
 npm run dev
 ```
 
-Abrí `http://localhost:5173`. Sin variables de entorno, sin cuenta.
+Abrí la dirección que muestra Vite al ejecutar `npm run dev`. Sin variables de entorno, sin cuenta.
 
 ## Qué hay en esta versión
 
 ### Flujo principal
 - Tu **catálogo de productos** vive en una sección propia (`Catálogo`) — lo cargás una vez (importando un archivo o agregando productos a mano) y queda guardado en el navegador. Las comparaciones lo usan automáticamente; no hace falta volver a subirlo cada vez.
-- Proveedores con configuración de IVA/moneda.
+- Proveedores con moneda predeterminada de lista e IVA informativo (sin cálculo automático).
 - Wizard de 4 pasos para cargar sólo la lista nueva del proveedor y compararla contra tu catálogo ya guardado. **Recuerda el mapeo de columnas por proveedor** — si ya cargaste una lista de ese proveedor antes, te lo pre-completa.
 - Matching en varios niveles: código exacto → código normalizado → equivalencia histórica confirmada → **familia de código** → descripción (fuzzy).
 - Un match por código exacto o normalizado, o una equivalencia ya confirmada, se considera definitivo — no se vuelve a poner en duda por una heurística de texto sobre la presentación.
-- Los cambios de precio quedan **aprobados automáticamente** en cuanto el match es confiable; sólo hace falta actuar si querés **rechazar** alguno puntual (o reincluirlo después).
+- Identificar un producto y aprobar su precio son decisiones separadas. Confirmar identidad o enseñar cantidades deja el precio pendiente. Los códigos exactos/normalizados pueden aprobar precios válidos automáticamente si esa opción está activada en Configuración.
 - **Exportación a Excel con formato real** (todo, o solo los cambios aprobados): encabezado con color, formato de moneda/porcentaje, colores por estado igual que en pantalla, y **ambas descripciones** (proveedor e interna) en columnas separadas para ocultar/borrar la que no necesites al imprimir.
 - Backup manual (exportar/importar `.json` completo) desde la barra lateral.
 
@@ -35,7 +35,7 @@ Cuando el código del proveedor no es idéntico al tuyo pero comparte una base f
 
 ### Panel de revisión ("tipo Tinder")
 Desde el botón **"Revisar pendientes"** en cada comparación, se abre una cola que muestra un ítem dudoso a la vez:
-- **Sí, es este** → confirma la sugerencia del algoritmo (queda en el diccionario para la próxima vez).
+- **Confirmar producto** → confirma la identidad y la recuerda; el precio queda pendiente de aprobación.
 - **No, buscar otro** → abre una búsqueda manual sobre todo el catálogo, para elegir vos el producto correcto.
 - **No existe / discontinuado** → lo marca como tal; la próxima lista del mismo proveedor va a saltear ese código automáticamente sin volver a preguntar.
 - **Dejar para después** → lo saca de la ronda actual sin decidir nada; queda disponible para retomar.
@@ -46,12 +46,12 @@ Los matches ya "seguros" (código exacto, etc.) nunca entran a este panel ni mue
 
 ### Resultados
 - Filtros por estado, incluyendo **Discontinuados**.
-- **Subieron / Bajaron** ahora sólo cuentan cambios ya aprobados o con match confirmado — un match dudoso no infla las estadísticas de aumentos.
+- **Subieron / Bajaron** muestran precios válidos de productos identificados, incluidos pendientes, y excluyen rechazados.
 - Orden por precio, score de coincidencia, **porcentaje de cambio**, o alfabético — los ítems sin ese dato siempre quedan al final, sea cual sea la dirección.
 - **Eliminar** una comparación entera (se saca del historial y del dashboard) — también disponible desde el Dashboard y el Historial.
 
 ### Diccionario de equivalencias
-Agrupado por proveedor en secciones plegables — cada una muestra sus equivalencias confirmadas y sus códigos discontinuados por separado.
+Por proveedor, con relaciones por artículo y reglas generales de presentación operativas. Las cantidades específicas tienen prioridad. Los códigos discontinuados se muestran con una acción para volver a habilitarlos.
 
 ### Rendimiento con listas grandes
 El motor de matching precalcula la tokenización de todo el catálogo **una sola vez por corrida** (no por ítem) y trae de una consulta todo lo que el proveedor tiene aprendido (equivalencias, discontinuados) — con catálogos y listas de varios miles de artículos, esto es la diferencia entre segundos y minutos.

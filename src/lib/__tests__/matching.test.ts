@@ -112,13 +112,24 @@ describe("codeFamilySimilarity", () => {
 
 describe("matchItem — flujo completo", () => {
   function buildDeps(products: ProductForMatch[]): MatchDeps {
+    // La producción aporta este índice; el fixture anterior lo omitía y
+    // nunca permitía entrar al nivel code_family, aunque el test lo esperaba.
+    const descriptionIndex = products.map(buildProductIndexEntry);
+    const codeFamilyIndex = new Map<string, typeof descriptionIndex>();
+    for (const entry of descriptionIndex) {
+      const key = entry.normalizedCode.slice(0, 5);
+      const bucket = codeFamilyIndex.get(key) ?? [];
+      bucket.push(entry);
+      codeFamilyIndex.set(key, bucket);
+    }
     return {
       byExactCode: new Map(products.map((p) => [p.code.toUpperCase(), p])),
       byNormalizedCode: new Map(products.map((p) => [normalizeCodeForMatch(p.code), p])),
       confirmedEquivalences: new Map(),
       rejectedEquivalences: new Set(),
       productsById: new Map(products.map((p) => [p.id, p])),
-      descriptionIndex: products.map(buildProductIndexEntry),
+      descriptionIndex,
+      codeFamilyIndex,
     };
   }
 
