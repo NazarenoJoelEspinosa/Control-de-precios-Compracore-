@@ -2,16 +2,16 @@ import { priceIssue } from "@/lib/pricePolicy";
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import clsx from "clsx";
-import { comparisonSessionsRepo, priceChangesRepo, priceListItemsRepo, productsRepo } from "@/lib/db";
+import { comparisonSessionsRepo, priceChangesRepo, priceListItemsRepo, productsRepo, suppliersRepo } from "@/lib/db";
 import { MatchStateBadge, PriceDeltaBadge, ChangeStatusBadge } from "@/components/ui/StatusBadges";
 import PresentationConversionEditor from "@/components/PresentationConversionEditor";
 import { convertPresentationPrice } from "@/lib/presentationConversions";
 import MatchResolutionPanel from "@/components/MatchResolutionPanel";
 import { formatPrice } from "@/lib/normalize";
-import { scoreProductAgainstItem } from "@/lib/matching";
-import { confirmMatch, decidePriceChange, decidePriceChanges } from "@/lib/reviewActions";
+import CatalogGapReview from "./CatalogGapReview";
+import { decidePriceChange, decidePriceChanges } from "@/lib/reviewActions";
 import { exportAllResults, exportApprovedOnly, type ExportRow } from "@/lib/exportResults";
-import type { ComparisonSession, PriceChange, PriceListItem, Product } from "@/types/database";
+import type { ComparisonSession, PriceListItem, Product } from "@/types/database";
 
 type FilterKey =
   | "all"
@@ -69,9 +69,9 @@ export default function ResultsPage() {
   const [session, setSession] = useState<ComparisonSession | null>(null);
   const [rows, setRows] = useState<ExportRow[]>([]);
   const [catalogGaps, setCatalogGaps] = useState<Product[]>([]);
+  const [ignoreEtPrefix, setIgnoreEtPrefix] = useState(false);
   const [catalogTotal, setCatalogTotal] = useState(0);
   const [showCatalogGaps, setShowCatalogGaps] = useState(false);
-  const [resolvingGap, setResolvingGap] = useState<Product | null>(null);
   const [filter, setFilter] = useState<FilterKey>("all");
   const [sort, setSort] = useState<SortKey>("none");
   const [search, setSearch] = useState("");
@@ -86,9 +86,9 @@ export default function ResultsPage() {
     if (sessionId) load();
   }, [sessionId]);
 
-  async function load() {
+  async function load(background = false) {
     if (!sessionId) return;
-    setLoading(true);
+    if (!background) setLoading(true);
     const sessionData = await comparisonSessionsRepo.get(sessionId);
     setSession(sessionData ?? null);
     if (!sessionData) {
@@ -96,6 +96,8 @@ export default function ResultsPage() {
       return;
     }
 
+    const supplier = await suppliersRepo.get(sessionData.supplier_id);
+    setIgnoreEtPrefix(supplier?.ignore_et_prefix === true);
     const items = await priceListItemsRepo.listByPriceList(sessionData.price_list_id);
     const changes = await priceChangesRepo.listBySession(sessionId);
     const productIds = [...new Set(items.flatMap((i) => i.matched_presentations?.map(c => c.product_id) ?? [i.matched_product_id]).filter(Boolean))] as string[];
@@ -186,14 +188,14 @@ export default function ResultsPage() {
   async function decide(row: ExportRow, status: "approved" | "rejected") {
     if (!row.change) return;
     setActionError(""); setDeciding(true);
-    try { await decidePriceChange(row.change.id, status); await load(); }
+    try { await decidePriceChange(row.change.id, status); await load(true); }
     catch (error) { setActionError(error instanceof Error ? error.message : "No se pudo decidir el precio"); }
     finally { setDeciding(false); }
   }
   async function approveFiltered() {
     if (!pendingPrices.length || !window.confirm(`¿Aprobar los ${pendingPrices.length} precios pendientes del filtro actual?`)) return;
     setActionError(""); setDeciding(true);
-    try { await decidePriceChanges(pendingPrices.map(r => r.change!.id), "approved"); await load(); }
+    try { await decidePriceChanges(pendingPrices.map(r => r.change!.id), "approved"); await load(true); }
     catch (error) { setActionError(error instanceof Error ? error.message : "No se pudieron aprobar los precios"); }
     finally { setDeciding(false); }
   }
@@ -295,62 +297,15 @@ export default function ResultsPage() {
       </div>
 
       {showCatalogGaps ? (
-        <div className="panel overflow-hidden">
-          <div className="flex items-center justify-between border-b border-steel-100 bg-steel-50 px-4 py-3">
-            <div>
-              <p className="text-sm font-medium text-ink">Productos de tu catálogo que no aparecieron en esta lista</p>
-              <p className="text-xs text-steel-600">
-                Puede ser que el proveedor no los vendió esta vez, que los descontinuó, o que vinieron con un
-                código/descripción tan distinta que el sistema no los pudo reconocer solo. Buscalos entre lo que sí
-                mandó y no se enganchó a nada.
-              </p>
-            </div>
-            <button onClick={() => setShowCatalogGaps(false)} className="shrink-0 text-sm text-teal-600 hover:underline">
-              ‹ Volver a los resultados
-            </button>
-          </div>
-          <div className="divide-y divide-steel-100">
-            {catalogGaps.map((p) => (
-              <div key={p.id}>
-                <div className="flex items-center justify-between px-4 py-2.5 hover:bg-steel-50">
-                  <div>
-                    <p className="text-sm text-ink">{p.description}</p>
-                    <p className="mono-num text-xs text-steel-600">
-                      {p.code} · {formatPrice(p.current_price, p.currency)}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setResolvingGap(resolvingGap?.id === p.id ? null : p)}
-                    className={clsx(
-                      "shrink-0 rounded px-3 py-1.5 text-xs font-semibold",
-                      resolvingGap?.id === p.id
-                        ? "bg-steel-200 text-steel-800"
-                        : "bg-teal-500 text-white hover:bg-teal-600"
-                    )}
-                  >
-                    {resolvingGap?.id === p.id ? "Cerrar" : "Buscar"}
-                  </button>
-                </div>
-                {resolvingGap?.id === p.id && (
-                  <GapResolutionPanel
-                    session={session}
-                    product={p}
-                    notFoundItems={notFoundItems}
-                    onResolved={() => {
-                      setResolvingGap(null);
-                      load();
-                    }}
-                  />
-                )}
-              </div>
-            ))}
-          </div>
-          {catalogGaps.length === 0 && (
-            <p className="px-4 py-8 text-center text-sm text-steel-600">
-              Todo tu catálogo para este proveedor apareció en esta lista.
-            </p>
-          )}
-        </div>
+        <CatalogGapReview
+          key={session.id}
+          session={session}
+          products={catalogGaps}
+          ignoreEtPrefix={ignoreEtPrefix}
+          items={notFoundItems}
+          onRefresh={() => load(true)}
+          onClose={() => setShowCatalogGaps(false)}
+        />
       ) : (
         <>
       <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -489,7 +444,7 @@ export default function ResultsPage() {
           onClose={() => setSelected(null)}
           onResolved={() => {
             setSelected(null);
-            load();
+            load(true);
           }}
         />
       )}
@@ -633,6 +588,8 @@ function matchLevelLabel(level: PriceListItem["match_level"]): string {
       return "Código normalizado";
     case "equivalence":
       return "Equivalencia histórica";
+    case "code_prefix":
+      return "Mismo código con/sin prefijo ET-";
     case "code_family":
       return "Familia de código (otra presentación)";
     case "description":
@@ -642,89 +599,3 @@ function matchLevelLabel(level: PriceListItem["match_level"]): string {
   }
 }
 
-/**
- * Resuelve, a mano, un producto de TU catálogo que no apareció en la lista:
- * busca entre los ítems del proveedor que quedaron sin destino ("no
- * encontrados") cuáles se parecen por descripción, y deja enlazar el que
- * corresponda — o filtrar a mano si ninguna sugerencia sirve.
- */
-function GapResolutionPanel({
-  session,
-  product,
-  notFoundItems,
-  onResolved,
-}: {
-  session: ComparisonSession;
-  product: Product;
-  notFoundItems: PriceListItem[];
-  onResolved: () => void;
-}) {
-  const [query, setQuery] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const suggestions = useMemo(() => {
-    return notFoundItems
-      .map((item) => ({
-        item,
-        score: scoreProductAgainstItem(
-          { id: product.id, code: product.code, description: product.description, brand: product.brand, unit: product.unit, current_price: product.current_price, currency: product.currency },
-          { supplier_code: item.supplier_code, supplier_description: item.supplier_description, supplier_brand: item.supplier_brand, supplier_unit: item.supplier_unit }
-        ),
-      }))
-      .sort((a, b) => b.score - a.score);
-  }, [notFoundItems, product]);
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const base = q
-      ? suggestions.filter(
-          ({ item }) =>
-            item.supplier_code.toLowerCase().includes(q) || item.supplier_description.toLowerCase().includes(q)
-        )
-      : suggestions.filter(({ score }) => score >= 25);
-    return base.slice(0, 8);
-  }, [suggestions, query]);
-
-  async function handleLink(item: PriceListItem) {
-    setBusy(true);
-    await confirmMatch(session, item, product.id);
-    setBusy(false);
-    onResolved();
-  }
-
-  return (
-    <div className="space-y-2 border-t border-steel-100 bg-steel-50 px-4 py-3">
-      <input
-        autoFocus
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Filtrar por código o descripción del proveedor..."
-        className="w-full rounded border border-steel-200 px-3 py-1.5 text-sm focus:border-teal-500"
-      />
-      {filtered.length === 0 ? (
-        <p className="text-xs text-steel-600">
-          {notFoundItems.length === 0
-            ? "No quedan ítems sin enganchar en esta lista para vincular."
-            : "Nada se parece por descripción — probá filtrar a mano por código."}
-        </p>
-      ) : (
-        <div className="max-h-56 space-y-1 overflow-y-auto">
-          {filtered.map(({ item }) => (
-            <button
-              key={item.id}
-              disabled={busy}
-              onClick={() => handleLink(item)}
-              className="block w-full rounded border border-steel-200 bg-white p-2 text-left text-sm hover:border-teal-500 hover:bg-teal-50 disabled:opacity-60"
-            >
-              <p className="font-medium text-ink">{item.supplier_description}</p>
-              <p className="mono-num text-xs text-steel-600">
-                {item.supplier_code}
-                {item.raw_price ? ` · ${item.raw_price}` : ""}
-              </p>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}

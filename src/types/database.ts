@@ -4,7 +4,7 @@
  * sola persona usando su propia máquina.
  */
 
-export type MatchLevel = "exact_code" | "normalized_code" | "equivalence" | "code_family" | "description" | "none";
+export type MatchLevel = "code_prefix" | "exact_code" | "normalized_code" | "equivalence" | "code_family" | "description" | "none";
 export type MatchState = "safe" | "review" | "not_found" | "new_product" | "presentation_diff" | "discontinued";
 export type PriceListStatus = "uploaded" | "mapped" | "processing" | "processed" | "error";
 export type PriceChangeStatus = "pending" | "approved" | "rejected" | "edited";
@@ -21,6 +21,8 @@ export interface Supplier {
   vat_rate: number;
   default_currency: Currency;
   notes: string;
+  /** Comparar códigos con/sin ET- únicamente para este proveedor. */
+  ignore_et_prefix?: boolean;
   /** Datos libres para que el usuario configure cada proveedor sin depender de campos rígidos. */
   categories?: string[];
   conditions?: string;

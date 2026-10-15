@@ -4,7 +4,7 @@ import type { Supplier } from "@/types/database";
 const emptySupplier = {
     name: "", code: "", email: "", phone: "", active: true,
     price_includes_vat: false, vat_rate: 21, default_currency: "ARS" as const,
-    notes: "", categories: [] as string[], conditions: "",
+    ignore_et_prefix: false, notes: "", categories: [] as string[], conditions: "",
 };
 export default function SuppliersPage() {
     const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -93,6 +93,10 @@ function SupplierEditor({ supplier, onClose, onSaved }: {
       <Field label="Email"><input type="email" value={form.email} onChange={e => set("email", e.target.value)}/></Field>
       <Field label="Moneda predeterminada de la lista"><select value={form.default_currency} onChange={e => set("default_currency", e.target.value as "ARS" | "USD")}><option value="ARS">ARS</option><option value="USD">USD</option></select></Field>
       <Field label="Categorías (separadas por coma)"><input value={categoryText} onChange={e => setCategoryText(e.target.value)} placeholder="Herramientas, abrasivos..."/></Field>
+    </div>
+    <div className="mt-4 rounded border border-steel-100 bg-steel-50 p-3">
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.ignore_et_prefix ?? false} onChange={e => set("ignore_et_prefix", e.target.checked)}/> Reconocer códigos con/sin ET- para este proveedor</label>
+      <p className="mt-1 text-xs text-steel-600">Ejemplo: ET-ABC123 y ABC123. Activá esta regla sólo si este proveedor usa ese prefijo. Se conserva el código original.</p>
     </div>
     <div className="mt-4"><Field label="Condiciones / descuentos"><textarea rows={4} value={form.conditions ?? ""} onChange={e => set("conditions", e.target.value)} placeholder="Descuentos por marca, condiciones de pago, mínimos..."/></Field></div>
     <div className="mt-4"><Field label="Notas"><textarea rows={6} value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="Contacto, IVA por artículo, teléfonos, observaciones, cualquier cosa que quieras recordar..."/></Field></div>

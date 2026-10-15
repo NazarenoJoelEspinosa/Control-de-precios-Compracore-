@@ -1,6 +1,7 @@
+import { sameCodeWithoutPrefix } from "@/lib/codePrefixes";
 import PresentationConversionEditor from "./PresentationConversionEditor";
 import { useEffect, useState } from "react";
-import { productsRepo, settingsRepo } from "@/lib/db";
+import { productsRepo, settingsRepo, suppliersRepo } from "@/lib/db";
 import { confirmMatch, markDiscontinued, rejectSuggestion } from "@/lib/reviewActions";
 import { formatPrice } from "@/lib/normalize";
 import { buildProductIndexEntry, scoreDescription } from "@/lib/matching";
@@ -36,18 +37,18 @@ export default function MatchResolutionPanel({
       return;
     }
     let cancelled = false;
-    Promise.all([productsRepo.listBySupplier(session.supplier_id), settingsRepo.get()]).then(([catalog, settings]) => {
+    Promise.all([productsRepo.listBySupplier(session.supplier_id), settingsRepo.get(), suppliersRepo.get(session.supplier_id)]).then(([catalog, settings, supplier]) => {
+      const prefixMatch = (code: string) => supplier?.ignore_et_prefix === true && sameCodeWithoutPrefix(code, item.supplier_code);
       if (cancelled) return;
-      if (settings.enable_description === false) { setSimilar([]); return; }
       const queryText = [item.supplier_description, item.supplier_brand, item.supplier_unit].filter(Boolean).join(" ");
       const scored = catalog
-        .filter((p) => p.active)
+        .filter((p) => p.active && (settings.enable_description !== false || prefixMatch(p.code)))
         .map((p) => {
           const entry = buildProductIndexEntry(p);
           return { product: p, score: scoreDescription(queryText, entry.text, entry.tokenSet, entry.trigramSet) };
         })
-        .filter((c) => c.score >= 25) // por debajo de esto ya no aporta, sería ruido
-        .sort((a, b) => b.score - a.score)
+        .filter((c) => prefixMatch(c.product.code) || c.score >= 25) // por debajo de esto ya no aporta, sería ruido
+        .sort((a, b) => Number(prefixMatch(b.product.code)) - Number(prefixMatch(a.product.code)) || b.score - a.score)
         .slice(0, 3);
       setSimilar(scored);
     });

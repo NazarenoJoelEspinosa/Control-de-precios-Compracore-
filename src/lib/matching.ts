@@ -11,7 +11,9 @@
  */
 import { normalizeCodeForMatch, normalizeText, tokenize, stemToken, trigrams, presentationAlert, codeFamilySimilarity } from "./normalize";
 
-export type MatchLevel = "exact_code" | "normalized_code" | "equivalence" | "code_family" | "description" | "none";
+import { baseCode, sameCodeWithoutPrefix, prefixPresentationConflict } from "./codePrefixes";
+
+export type MatchLevel = "code_prefix" | "exact_code" | "normalized_code" | "equivalence" | "code_family" | "description" | "none";
 export type MatchState = "safe" | "review" | "not_found" | "new_product" | "presentation_diff" | "discontinued";
 
 export interface ProductForMatch {
@@ -201,6 +203,7 @@ export interface MatchDeps {
   /** Índice invertido: token -> entradas que lo contienen. Reduce el fuzzy
    * de catálogo completo a un conjunto pequeño de candidatos. */
   tokenIndex?: Map<string, ProductIndexEntry[]>;
+  prefixCodeIndex?: Map<string, ProductForMatch[]>;
   codeFamilyIndex?: Map<string, ProductIndexEntry[]>;
   maxCandidates?: number;
   enableCodeFamily?: boolean;
@@ -235,6 +238,19 @@ export function matchItem(
     if (product) {
       return buildResult(product, "equivalence", 98, item, thresholds, []);
     }
+  }
+
+  // Después de códigos completos y decisiones confirmadas, comparar el código
+  // base con/sin ET-. El índice pertenece únicamente al proveedor actual.
+  const prefixCandidates = (deps.prefixCodeIndex?.get(baseCode(code)) ?? [])
+    .filter(p => sameCodeWithoutPrefix(p.code, code) && !deps.rejectedEquivalences.has(`${equivKey}::${p.id}`));
+  if (prefixCandidates.length > 1) return {
+    matchedProductId: null, matchLevel: "code_prefix", matchScore: null,
+    matchState: "review", presentationReason: "Código base ambiguo: hay varios artículos con/sin ET-.",
+    candidates: prefixCandidates.map(product => ({ product, score: 95 })),
+  };
+  if (prefixCandidates.length === 1) {
+    return buildResult(prefixCandidates[0], "code_prefix", 95, item, thresholds, []);
   }
 
   // Nivel 4a: "familia de código" — el código del proveedor no es idéntico,
@@ -361,12 +377,14 @@ function buildResult(
       item.supplier_description,
       item.supplier_unit ?? ""
     );
-    presentationReason = alert.reason;
+    presentationReason = level === "code_prefix"
+      ? prefixPresentationConflict(product.description, product.unit ?? "", item.supplier_description, item.supplier_unit ?? "")
+      : alert.reason;
   }
 
   if (presentationReason) {
     state = "presentation_diff";
-  } else if (strongCodeSignal || score >= thresholds.safeMin) {
+  } else if (strongCodeSignal || level === "code_prefix" || score >= thresholds.safeMin) {
     state = "safe";
   } else {
     state = "review";

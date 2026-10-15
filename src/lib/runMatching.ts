@@ -1,3 +1,4 @@
+import { buildPrefixCodeIndex } from "./codePrefixes";
 import { priceIssue } from "./pricePolicy";
 import { comparisonStats } from "./comparisonStats";
 import { learnedPresentations, presentationChange, ruleConversion } from "./presentationConversions";
@@ -107,6 +108,7 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
     descriptionIndex,
     tokenIndex,
     codeFamilyIndex,
+    prefixCodeIndex: supplier?.ignore_et_prefix === true ? buildPrefixCodeIndex(activeProducts) : undefined,
     maxCandidates: rawThresholds.max_candidates ?? 250,
     enableCodeFamily: rawThresholds.enable_code_family !== false,
     enableDescription: rawThresholds.enable_description !== false,
