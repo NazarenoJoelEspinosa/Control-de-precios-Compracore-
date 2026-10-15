@@ -55,7 +55,7 @@ export default function SettingsPage() {
         <div className="mt-4 space-y-3">
           <Toggle checked={codeFamily} onChange={setCodeFamily} label="Buscar familias de código" help="Busca códigos parecidos cuando no existe coincidencia exacta, normalizada ni una equivalencia aprendida." />
           <Toggle checked={description} onChange={setDescription} label="Buscar por descripción" help="Usa descripción, marca y unidad cuando el código no alcanza. Desactivar esta opción evita las sugerencias por texto." />
-          <Toggle checked={autoExact} onChange={setAutoExact} label="Aprobar precios de códigos coincidentes" help="Decide si los precios válidos de códigos exactos y normalizados se aprueban solos o quedan pendientes. La identificación del producto sigue siendo automática." />
+          <Toggle checked={autoExact} onChange={setAutoExact} label="Aprobar precios de códigos coincidentes" help="Decide si los precios válidos de códigos exactos y normalizados se aprueban solos o quedan pendientes. Las subas desde 100% o bajas desde 50% sin presentación confirmada requieren revisión. La identificación del producto sigue siendo automática." />
         </div>
       </section>
       <section className="panel p-5">

@@ -1,3 +1,4 @@
+import { presentationReviewReason } from "./presentationReview";
 import { getDB } from "./db";
 import { comparisonStats } from "./comparisonStats";
 import { priceIssue } from "./pricePolicy";
@@ -88,6 +89,7 @@ export async function decidePriceChanges(changeIds: string[], status: "approved"
       const change = record!;
       const item = byId.get(change.price_list_item_id), product = productsById.get(change.product_id);
       if (!item || !product) throw new Error("No se pudo recuperar el artículo.");
+      if (status === "approved" && presentationReviewReason(item, product, change)) throw new Error("Revisá y confirmá la presentación antes de aprobar este precio.");
       if (status === "approved" && (priceIssue(item, product) || change.old_currency !== change.new_currency || !Number.isFinite(change.final_new_price ?? change.new_price))) {
         throw new Error("Corregí el precio o la moneda antes de aprobar.");
       }

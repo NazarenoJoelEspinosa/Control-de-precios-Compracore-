@@ -45,8 +45,8 @@ describe("Correcciones de claridad y precios", () => {
     expect((await priceChangesRepo.listBySession(id))[0].status).toBe("pending");
     expect((await comparisonSessionsRepo.get(id))?.approved_changes).toBe(0);
   });
-  it("aprobación automática por defecto sigue funcionando para códigos coincidentes", async () => {
-    const f = await setup(); const id = await runMatchingForPriceList(f.list.id, f.s.id);
+  it("aprobación automática sigue funcionando para códigos coincidentes con variaciones normales", async () => {
+    const f = await setup(); await priceListItemsRepo.update({ ...f.item, raw_price: "1200", supplier_description: "Tornillo x100", supplier_unit: "x100" }); const id = await runMatchingForPriceList(f.list.id, f.s.id);
     expect((await priceChangesRepo.listBySession(id))[0].status).toBe("approved");
   });
   it("una moneda incompatible identifica el artículo pero no calcula aumentos", async () => {
@@ -116,7 +116,7 @@ describe("Correcciones de claridad y precios", () => {
     expect((await priceChangesRepo.listBySession(next))[0].new_price).toBe(1200);
   });
   it("confirmar identidad deja precio pendiente; aprobar/rechazar recalcula estadísticas", async () => {
-    const f = await setup(); await settingsRepo.save({ auto_confirm_exact: false });
+    const f = await setup(); await priceListItemsRepo.update({ ...f.item, raw_price: "1200", supplier_description: "Tornillo x100", supplier_unit: "x100" }); await settingsRepo.save({ auto_confirm_exact: false });
     const id = await runMatchingForPriceList(f.list.id, f.s.id);
     const session = (await comparisonSessionsRepo.get(id))!, item = (await priceListItemsRepo.listByPriceList(f.list.id))[0];
     await confirmMatch(session, item, f.product.id);

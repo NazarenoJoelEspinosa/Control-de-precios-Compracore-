@@ -1,4 +1,5 @@
 import { buildPrefixCodeIndex } from "./codePrefixes";
+import { presentationReviewReason } from "./presentationReview";
 import { priceIssue } from "./pricePolicy";
 import { comparisonStats } from "./comparisonStats";
 import { learnedPresentations, presentationChange, ruleConversion } from "./presentationConversions";
@@ -156,7 +157,7 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
       // Identificación automática no equivale a aprobación manual del precio.
       // Conservar el comportamiento existente por defecto sólo para códigos coincidentes.
       change.status = rawThresholds.auto_confirm_exact !== false &&
-        ["exact_code", "normalized_code"].includes(item.match_level ?? "") ? "approved" : "pending";
+        ["exact_code", "normalized_code"].includes(item.match_level ?? "") && !presentationReviewReason(item, product, change) ? "approved" : "pending";
       if (change.diff_absolute !== 0 || conversions?.length) changesToCreate.push({ ...change,
         comparison_session_id: "", price_list_item_id: item.id });
     }

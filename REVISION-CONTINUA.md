@@ -1,15 +1,6 @@
-# Revisión continua de artículos faltantes
+# CompraCore: revisión continua
 
-En una comparación, abrí «Encontrar los … de mi catálogo».
-
-- La lista de tus artículos y el panel de búsqueda están visibles juntos.
-- El primer pendiente se abre automáticamente.
-- «Vincular y seguir» guarda la equivalencia y abre el siguiente artículo. El precio sigue pendiente de aprobación.
-- «Dejar para después» aparta el artículo sin marcarlo como encontrado ni discontinuado. Recuperalo en el filtro «Para después» y usá «Volver a pendientes» si lo necesitás.
-- «Anterior», «Siguiente» o Alt + flechas permiten recorrer los artículos.
-- Cada artículo conserva su búsqueda. La posición y los apartados se guardan por comparación en este navegador y origen. No forman parte del backup de la base de datos.
-- Se pueden buscar varias palabras y mostrar resultados adicionales de veinte en veinte. Se buscan los artículos del proveedor que siguen sin vincular, igual que en el flujo anterior.
-- En escritorio cada panel tiene desplazamiento independiente. Guardar ya no reemplaza toda la pantalla por «Cargando…».
+Este proyecto incluye las mejoras de revisión de faltantes, códigos ET por proveedor, enseñanza de presentaciones y filtros simplificados.
 
 ## Ejecutar
 
@@ -18,6 +9,55 @@ npm ci
 npm run dev
 ```
 
+## Encontrar artículos de mi catálogo
+
+En una comparación, abrí «Encontrar los … de mi catálogo».
+
+- Lista y búsqueda visibles a la vez, con desplazamiento independiente en escritorio.
+- «Vincular y seguir» guarda la equivalencia y abre el siguiente artículo. El precio queda pendiente de aprobación.
+- «Dejar para después» permite apartar un artículo y retomarlo desde su filtro. No lo marca como encontrado ni discontinuado.
+- «Anterior», «Siguiente» y Alt + flechas permiten navegar.
+- La posición, las búsquedas por artículo y los apartados se guardan en este navegador por comparación. No forman parte del backup de la base.
+- Guardar actualiza en segundo plano: no reemplaza la pantalla por «Cargando…».
+
+## Códigos con/sin ET-, sólo para un proveedor
+
+La regla está desactivada por defecto. Se puede activar desde Proveedores → Editar o directamente en la revisión de faltantes con «Reconocer ET- sólo para este proveedor».
+
+Las comparaciones nuevas reconocen `ET-ABC123` y `ABC123` en ambos sentidos cuando la regla está activada. Conservan los códigos originales y respetan la prioridad de códigos completos y equivalencias confirmadas. No recortan prefijos desconocidos, letras pegadas al modelo ni ceros iniciales.
+
+En comparaciones existentes, «Aplicar a esta comparación» resuelve faltantes inequívocos sin reimportar ni crear otra sesión. Omite ambigüedades, cantidades distintas, discontinuados, rechazos aprendidos y decisiones anteriores. La operación es transaccional y los nuevos precios quedan pendientes.
+
+Se reprodujo el caso `EWCB21005` frente a `ET-EWCB21005`.
+
+## Revisar presentaciones
+
+Abrí «Revisar presentaciones (N)», la tarjeta «Presentaciones a revisar» o el botón de la fila «Revisar presentación» / «Enseñar presentación».
+
+- Lista y editor juntos, con navegación anterior/siguiente y «Guardar y seguir».
+- Vista de producto propio y proveedor, precio original, cantidades, precio convertido y cambio real antes de guardar.
+- El artículo identificado se carga automáticamente. Las cantidades explícitas del texto pueden precargarse; se revisan y confirman manualmente. No se deducen cantidades por el precio.
+- Se pueden agregar varias presentaciones propias (x100, x10, xU, etc.) para el mismo código del proveedor.
+- «Dejar para después» y su filtro permiten retomar artículos pendientes. La posición y los apartados se guardan en este navegador.
+- Si el aumento es real y la presentación no cambió, confirmá la relación 1 → 1.
+- Guardar recuerda la relación para ese proveedor, recalcula esta comparación y deja los precios pendientes de aprobación.
+
+### Avisos por diferencias grandes
+
+Sin una presentación confirmada, una suba desde 100% o una baja desde 50% aparece como posible diferencia de caja/pack/unidad. Es un aviso, no una conversión automática. También se incluyen las presentaciones distintas detectadas al identificar.
+
+El producto puede seguir identificado por código exacto; la decisión sobre su precio se revisa por separado. Estos casos no se aprueban automáticamente, no se incluyen en la aprobación por lote y se excluyen de «Exportar solo aprobados» hasta confirmar la presentación. Esto también protege comparaciones antiguas, aunque sus precios hubieran quedado aprobados antes. «Exportar todo» conserva el dato y agrega el aviso.
+
+Caso probado de la captura: $10.629,45 por x50 → $212,59 por unidad frente a $212,58 anteriores: diferencia $0,01.
+
+## Filtros
+
+Cuatro pestañas: «Por revisar», «Precios pendientes», «Aprobados» y «Todos».
+
+En «Por revisar» se elige presentación, identificación del producto o errores de precio/moneda. «Más filtros» conserva subieron, bajaron, rechazados, discontinuados y otros estados. Se combina con la pestaña y la búsqueda actual. Cambiar de pestaña limpia el filtro adicional para evitar resultados vacíos por una combinación anterior.
+
+Los artículos del proveedor que no pertenecen al catálogo no llenan automáticamente la revisión humana. Siguen accesibles desde «Todos» → «Más filtros».
+
 ## Validación
 
 ```bash
@@ -25,33 +65,8 @@ npm test
 npm run build
 ```
 
-73 pruebas correctas, incluidas doce de interacción para esta pantalla: apartar/recuperar, avance automático tras retirar un artículo, persistencia, errores y reintento, bloqueo de doble guardado, búsqueda y paginación, navegación por teclado y lista vacía.
+87 pruebas correctas y compilación de producción correcta. Vite informa el aviso de tamaño de algunos archivos generados (bibliotecas Excel).
 
-No se pudo completar la comprobación visual en un navegador en el entorno de edición: no estaba instalado Chromium y su descarga no estuvo disponible. La compilación y las pruebas de interacción sí se ejecutaron.
+Se comprobó la interfaz con Chromium a 1440×1000 y 390×844, usando datos de prueba: cuatro pestañas, filtros combinados, apertura de presentaciones, cantidades x50/x1, precio convertido, guardar y avanzar, conservación del desplazamiento, apartar/retomar y ausencia de desbordamiento horizontal en móvil.
 
-## Archivos modificados
-
-- `src/features/comparisons/ResultsPage.tsx`: actualización en segundo plano sin desmontar la pantalla e integración del nuevo panel.
-- `src/features/comparisons/CatalogGapReview.tsx`: revisión continua.
-- `src/features/comparisons/__tests__/CatalogGapReview.test.tsx`: pruebas de interacción.
-- `package.json` y `package-lock.json`: dependencias de desarrollo del renderizador de pruebas de React.
-
-Este ZIP contiene el proyecto fuente completo. Las dependencias se instalan con `npm ci`.
-
-## Códigos con o sin prefijo ET-
-
-Sólo para los proveedores donde se active la opción «Reconocer códigos con/sin ET- para este proveedor», las comparaciones nuevas reconocen `ET-ABC123` y `ABC123` en ambos sentidos. La opción está desactivada por defecto para proveedores existentes y nuevos. Se activa en Proveedores → Editar → Reconocer códigos con/sin ET- para este proveedor → Guardar cambios. La regla se aplica después del código completo y las equivalencias ya confirmadas, únicamente dentro del proveedor actual. No cambia los códigos guardados ni elimina prefijos desconocidos o letras pegadas al modelo.
-
-Un código base único identifica el artículo. Si hay más de un candidato, queda para revisión sin elegir uno arbitrariamente. Las diferencias explícitas de presentación/cantidad, incluida xU frente a x100, también se revisan. El precio resultante de esta regla siempre queda pendiente de aprobación.
-
-Las comparaciones anteriores pueden actualizarse sin reimportar: activá «Reconocer ET- sólo para este proveedor» dentro de la misma pantalla y tocá «Aplicar a esta comparación». La operación vincula los códigos base únicos todavía sin asociar, en una sola transacción. Omite decisiones y cambios de precio anteriores, discontinuados, rechazos aprendidos, ambigüedades y cantidades distintas; recalcula los contadores y deja los nuevos precios pendientes. Al abrirlas sin aplicar la regla, en «Encontrar productos de mi catálogo», las coincidencias con/sin ET- aparecen primero, incluso si sus descripciones no se parecen, con una etiqueta que explica la coincidencia. «Vincular y seguir» permite resolverlas sin volver a importar la lista.
-
-Se añadieron diez pruebas del motor y de integración con IndexedDB (ambos sentidos, prioridad de códigos completos y equivalencias confirmadas, prefijos desconocidos, ceros iniciales, colisiones, rechazos, presentaciones e independencia por proveedor), y dos pruebas de interacción para las comparaciones existentes.
-
-La misma opción controla las sugerencias en las comparaciones existentes. Ningún otro proveedor recibe esta regla automáticamente. Las pruebas verifican la activación, desactivación y la ausencia de configuración.
-
-## Corrección para comparaciones existentes
-
-Se reprodujo el caso `EWCB21005` frente a `ET-EWCB21005` de la captura. Ahora hay un control visible en la revisión que indica si la regla está activada y permite cambiarla únicamente para el proveedor de la comparación. «Aplicar a esta comparación» resuelve los pendientes inequívocos sin crear otra comparación, sin reimportar y sin aprobar precios. Los restantes conservan su revisión manual. Se conserva el siguiente artículo pendiente al quitar del listado los que se acaban de resolver.
-
-Se añadieron seis pruebas de la actualización transaccional y dos pruebas de los controles de activación/aplicación.
+El ZIP contiene el código fuente completo; no incluye dependencias instaladas ni archivos temporales del navegador de pruebas.

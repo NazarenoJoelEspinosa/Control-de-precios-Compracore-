@@ -1,3 +1,4 @@
+import { presentationReviewReason } from "./presentationReview";
 import { priceIssue } from "./pricePolicy";
 import { convertPresentationPrice } from "./presentationConversions";
 import type ExcelJS from "exceljs";
@@ -117,7 +118,7 @@ async function buildWorkbook(rows: ExportRow[], title: string, sheetName: string
     excelRow.getCell(9).value = STATE_LABELS[row.item.match_state];
     excelRow.getCell(11).value = row.item.supplier_currency ?? row.product?.currency ?? "";
     excelRow.getCell(12).value = row.product?.currency ?? "";
-    excelRow.getCell(13).value = issue ?? "";
+    excelRow.getCell(13).value = issue ?? presentationReviewReason(row.item, row.product, row.change) ?? "";
     excelRow.getCell(14).value = conversion ? `x${conversion.supplier_quantity} → x${conversion.own_quantity}; dividir por ${conversion.supplier_quantity / conversion.own_quantity}` : "";
     excelRow.getCell(15).value = row.item.parsed_price ?? row.item.raw_price;
     excelRow.getCell(15).numFmt = "#,##0.00";
@@ -169,7 +170,7 @@ export async function exportAllResults(rows: ExportRow[], fileName: string) {
 
 /** Exporta solo los cambios aprobados — el archivo que efectivamente se usa para actualizar el sistema de gestión. */
 export async function exportApprovedOnly(rows: ExportRow[], fileName: string) {
-  const approved = rows.filter((r) => r.change?.status === "approved" && r.change.diff_absolute !== 0 && !priceIssue(r.item, r.product));
+  const approved = rows.filter((r) => r.change?.status === "approved" && r.change.diff_absolute !== 0 && !priceIssue(r.item, r.product) && !presentationReviewReason(r.item, r.product, r.change));
   const workbook = await buildWorkbook(approved, "PriceCore — Cambios aprobados", "Aprobados");
   await downloadWorkbook(workbook, fileName);
 }

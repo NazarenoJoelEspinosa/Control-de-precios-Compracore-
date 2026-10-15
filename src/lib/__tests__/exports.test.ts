@@ -29,6 +29,13 @@ describe("Excel de resultados", () => {
     expect(sheet.getRow(4).getCell(14).value).toContain("dividir por 10");
     expect(sheet.getRow(4).getCell(15).value).toBe(10000);
   });
+  it("excluye de aprobados las diferencias grandes sin presentación confirmada, incluso en comparaciones antiguas", async () => {
+    const suspicious = row(); suspicious.item = { ...suspicious.item, matched_presentations: undefined }; suspicious.change = { ...suspicious.change!, new_price: 10000, diff_absolute: 9100 };
+    const sheet = await capture(() => exportApprovedOnly([row(), suspicious], "test.xlsx"));
+    expect(sheet.rowCount).toBe(4);
+    const all = await capture(() => exportAllResults([suspicious], "all.xlsx"));
+    expect(all.getRow(4).getCell(13).value).toContain("Diferencia grande");
+  });
   it("solo exporta aprobados válidos y excluye pendientes, rechazados y errores", async () => {
     const sheet = await capture(() => exportApprovedOnly([row(), row("pending"), row("rejected"), row("approved", "Precio inválido")], "test.xlsx"));
     expect(sheet.rowCount).toBe(4);

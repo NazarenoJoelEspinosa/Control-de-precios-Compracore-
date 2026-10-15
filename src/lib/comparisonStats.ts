@@ -1,8 +1,9 @@
 import type { ComparisonSession, PriceChange, PriceListItem, Product } from "@/types/database";
+import { presentationReviewReason } from "./presentationReview";
 import { priceIssue } from "./pricePolicy";
 import { convertPresentationPrice } from "./presentationConversions";
 
-type Change = Pick<PriceChange, "price_list_item_id" | "product_id" | "diff_absolute" | "status">;
+type Change = Pick<PriceChange, "price_list_item_id" | "product_id" | "diff_absolute" | "status" | "old_price" | "new_price" | "final_new_price">;
 export function comparisonStats(items: PriceListItem[], changes: Change[], products: Product[]): Pick<ComparisonSession,
   "total_items" | "safe_matches" | "review_items" | "not_found_items" | "new_products" | "presentation_diff_items" | "discontinued_items" | "price_increases" | "price_decreases" | "price_unchanged" | "approved_changes"> {
   const stats = { total_items: items.length, safe_matches: 0, review_items: 0, not_found_items: 0, new_products: 0, presentation_diff_items: 0, discontinued_items: 0,
@@ -23,7 +24,7 @@ export function comparisonStats(items: PriceListItem[], changes: Change[], produ
         if (change.diff_absolute > 0) stats.price_increases++;
         else if (change.diff_absolute < 0) stats.price_decreases++;
         else stats.price_unchanged++;
-        if (change.status === "approved" && change.diff_absolute !== 0) stats.approved_changes++;
+        if (change.status === "approved" && change.diff_absolute !== 0 && !presentationReviewReason(item, product, change)) stats.approved_changes++;
       } else {
         const conversion = item.matched_presentations?.find(c => c.product_id === id);
         const price = conversion ? convertPresentationPrice(item.parsed_price!, conversion.supplier_quantity, conversion.own_quantity) : item.parsed_price;
