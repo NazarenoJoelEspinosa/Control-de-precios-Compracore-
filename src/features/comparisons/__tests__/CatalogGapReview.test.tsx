@@ -1,11 +1,15 @@
 import { act, create, type ReactTestRenderer, type ReactTestInstance } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import CatalogGapReview from "../CatalogGapReview";
+import { suppliersRepo } from "@/lib/db";
+import { applyPrefixMatches } from "@/lib/applyPrefixMatches";
 import { confirmMatch } from "@/lib/reviewActions";
 import type { ComparisonSession, Product, PriceListItem } from "@/types/database";
 
 vi.mock("@/lib/reviewActions", () => ({ confirmMatch: vi.fn() }));
-const session = { id: "session" } as ComparisonSession;
+vi.mock("@/lib/db", () => ({ suppliersRepo: { update: vi.fn() } }));
+vi.mock("@/lib/applyPrefixMatches", () => ({ applyPrefixMatches: vi.fn() }));
+const session = { id: "session", supplier_id: "supplier" } as ComparisonSession;
 const products = Array.from({ length: 154 }, (_, i) => ({ id: `p${i}`, code: `CAT${i}`, description: `LLAVE EMTOP ${i}`, brand: "EMTOP", unit: "U", currency: "ARS", current_price: 5000 } as Product));
 const items = Array.from({ length: 42 }, (_, i) => ({ id: `i${i}`, supplier_code: `PROV${i}`, supplier_description: `LLAVE EMTOP ${i}`, supplier_brand: "EMTOP", supplier_unit: "U", supplier_currency: "ARS", parsed_price: 5500 } as PriceListItem));
 let renderer: ReactTestRenderer;
@@ -24,12 +28,29 @@ function mount(override: Partial<Parameters<typeof CatalogGapReview>[0]> = {}) {
 beforeEach(() => {
   vi.clearAllMocks(); values = new Map(); refresh = vi.fn().mockResolvedValue(undefined);
   vi.mocked(confirmMatch).mockResolvedValue(undefined);
+  vi.mocked(suppliersRepo.update).mockResolvedValue({} as never);
+  vi.mocked(applyPrefixMatches).mockResolvedValue({ linked: 1, review: 0, linkedProductIds: ["p0"] });
   vi.stubGlobal("localStorage", { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value) });
   vi.stubGlobal("window", { addEventListener: (_: string, handler: typeof keyHandler) => { keyHandler = handler; }, removeEventListener: () => {} });
 });
 afterEach(() => { act(() => renderer?.unmount()); vi.unstubAllGlobals(); });
 
 describe("revisión continua del catálogo", () => {
+  it("permite activar la regla desde la comparación únicamente para su proveedor", async () => {
+    mount(); expect(button("Aplicar a esta comparación").props.disabled).toBe(true);
+    const checkbox = renderer.root.findByProps({ type: "checkbox" });
+    await act(async () => { await checkbox.props.onChange({ target: { checked: true } }); });
+    expect(suppliersRepo.update).toHaveBeenCalledWith("supplier", { ignore_et_prefix: true });
+    expect(refresh).toHaveBeenCalledOnce(); expect(applyPrefixMatches).not.toHaveBeenCalled();
+  });
+  it("aplica la regla a la comparación actual y conserva el siguiente artículo pendiente", async () => {
+    mount({ ignoreEtPrefix: true });
+    refresh.mockImplementation(async () => renderer.update(<CatalogGapReview session={session} products={products.slice(1)} items={items} onRefresh={refresh} onClose={() => {}} ignoreEtPrefix />));
+    await click(button("Aplicar a esta comparación"));
+    expect(applyPrefixMatches).toHaveBeenCalledWith("session");
+    expect(heading()).toBe("LLAVE EMTOP 1");
+    expect(renderer.root.findByProps({ role: "status" }).children.join("")).toContain("1 artículos vinculados");
+  });
   it("deja un artículo para después, avanza y permite recuperarlo", async () => {
     mount(); await click(button("Dejar para después →")); expect(heading()).toBe("LLAVE EMTOP 1");
     await click(button("Para después")); expect(heading()).toBe("LLAVE EMTOP 0");

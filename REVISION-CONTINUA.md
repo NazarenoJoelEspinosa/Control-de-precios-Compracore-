@@ -25,7 +25,7 @@ npm test
 npm run build
 ```
 
-65 pruebas correctas, incluidas diez de interacción para esta pantalla: apartar/recuperar, avance automático tras retirar un artículo, persistencia, errores y reintento, bloqueo de doble guardado, búsqueda y paginación, navegación por teclado y lista vacía.
+73 pruebas correctas, incluidas doce de interacción para esta pantalla: apartar/recuperar, avance automático tras retirar un artículo, persistencia, errores y reintento, bloqueo de doble guardado, búsqueda y paginación, navegación por teclado y lista vacía.
 
 No se pudo completar la comprobación visual en un navegador en el entorno de edición: no estaba instalado Chromium y su descarga no estuvo disponible. La compilación y las pruebas de interacción sí se ejecutaron.
 
@@ -44,8 +44,14 @@ Sólo para los proveedores donde se active la opción «Reconocer códigos con/s
 
 Un código base único identifica el artículo. Si hay más de un candidato, queda para revisión sin elegir uno arbitrariamente. Las diferencias explícitas de presentación/cantidad, incluida xU frente a x100, también se revisan. El precio resultante de esta regla siempre queda pendiente de aprobación.
 
-Las comparaciones anteriores no se recalculan al abrirlas: en «Encontrar productos de mi catálogo», las coincidencias con/sin ET- aparecen primero, incluso si sus descripciones no se parecen, con una etiqueta que explica la coincidencia. «Vincular y seguir» permite resolverlas sin volver a importar la lista.
+Las comparaciones anteriores pueden actualizarse sin reimportar: activá «Reconocer ET- sólo para este proveedor» dentro de la misma pantalla y tocá «Aplicar a esta comparación». La operación vincula los códigos base únicos todavía sin asociar, en una sola transacción. Omite decisiones y cambios de precio anteriores, discontinuados, rechazos aprendidos, ambigüedades y cantidades distintas; recalcula los contadores y deja los nuevos precios pendientes. Al abrirlas sin aplicar la regla, en «Encontrar productos de mi catálogo», las coincidencias con/sin ET- aparecen primero, incluso si sus descripciones no se parecen, con una etiqueta que explica la coincidencia. «Vincular y seguir» permite resolverlas sin volver a importar la lista.
 
 Se añadieron diez pruebas del motor y de integración con IndexedDB (ambos sentidos, prioridad de códigos completos y equivalencias confirmadas, prefijos desconocidos, ceros iniciales, colisiones, rechazos, presentaciones e independencia por proveedor), y dos pruebas de interacción para las comparaciones existentes.
 
 La misma opción controla las sugerencias en las comparaciones existentes. Ningún otro proveedor recibe esta regla automáticamente. Las pruebas verifican la activación, desactivación y la ausencia de configuración.
+
+## Corrección para comparaciones existentes
+
+Se reprodujo el caso `EWCB21005` frente a `ET-EWCB21005` de la captura. Ahora hay un control visible en la revisión que indica si la regla está activada y permite cambiarla únicamente para el proveedor de la comparación. «Aplicar a esta comparación» resuelve los pendientes inequívocos sin crear otra comparación, sin reimportar y sin aprobar precios. Los restantes conservan su revisión manual. Se conserva el siguiente artículo pendiente al quitar del listado los que se acaban de resolver.
+
+Se añadieron seis pruebas de la actualización transaccional y dos pruebas de los controles de activación/aplicación.

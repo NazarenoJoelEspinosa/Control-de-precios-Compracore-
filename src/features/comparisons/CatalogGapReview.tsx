@@ -3,6 +3,8 @@ import clsx from "clsx";
 import { baseCode, sameCodeWithoutPrefix } from "@/lib/codePrefixes";
 import { formatPrice } from "@/lib/normalize";
 import { scoreProductAgainstItem } from "@/lib/matching";
+import { suppliersRepo } from "@/lib/db";
+import { applyPrefixMatches } from "@/lib/applyPrefixMatches";
 import { confirmMatch } from "@/lib/reviewActions";
 import type { ComparisonSession, PriceListItem, Product } from "@/types/database";
 
@@ -108,6 +110,36 @@ export default function CatalogGapReview({ session, products, items, onRefresh, 
     } finally { saving.current = false; setBusy(false); }
   }
 
+  async function setPrefixRule(enabled: boolean) {
+    if (saving.current) return;
+    saving.current = true; setBusy(true); setError("");
+    let saved = false;
+    try {
+      await suppliersRepo.update(session.supplier_id, { ignore_et_prefix: enabled });
+      saved = true;
+      await onRefresh();
+      setNotice(enabled ? "Regla ET- activada sólo para este proveedor. Usá «Aplicar a esta comparación» para resolver los faltantes actuales." : "Regla ET- desactivada para este proveedor. Las vinculaciones ya guardadas se conservan.");
+    } catch (cause) {
+      setError(saved ? "La regla se guardó, pero no se pudo actualizar la pantalla. Volvé a abrir la comparación." : cause instanceof Error ? cause.message : "No se pudo guardar la regla.");
+    } finally { saving.current = false; setBusy(false); }
+  }
+  async function applyPrefixRule() {
+    if (saving.current) return;
+    saving.current = true; setBusy(true); setError(""); setNotice("");
+    let saved = false;
+    try {
+      const result = await applyPrefixMatches(session.id);
+      saved = true;
+      const linkedIds = new Set(result.linkedProductIds);
+      const next = visible.slice(Math.max(0, index)).find(p => !linkedIds.has(p.id)) ?? [...visible.slice(0, index)].reverse().find(p => !linkedIds.has(p.id));
+      setProgress(p => ({ ...p, activeId: next?.id ?? "", deferred: p.deferred.filter(id => !linkedIds.has(id)) }));
+      await onRefresh();
+      setNotice(`${result.linked} artículos vinculados por código con/sin ET-. ${result.review} casos requieren revisión manual. Los precios quedan pendientes de aprobación.`);
+    } catch (cause) {
+      setError(saved ? "Las vinculaciones se guardaron, pero no se pudo actualizar la pantalla. Volvé a abrir la comparación." : cause instanceof Error ? cause.message : "No se pudo aplicar la regla.");
+    } finally { saving.current = false; setBusy(false); }
+  }
+
   return <section className="panel overflow-hidden" aria-label="Revisión continua de tu catálogo">
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-steel-100 bg-steel-50 p-4">
       <div><h2 className="text-sm font-semibold text-ink">Encontrar productos de mi catálogo</h2>
@@ -115,6 +147,11 @@ export default function CatalogGapReview({ session, products, items, onRefresh, 
         <p className="mt-1 text-xs text-steel-600">{products.length - deferredCount} pendientes · {deferredCount} para después · Alt + ← / → para navegar</p>
       </div>
       <button disabled={busy} onClick={onClose} className="text-sm text-teal-600 hover:underline disabled:opacity-50">‹ Volver a los resultados</button>
+    </div>
+    <div className="flex flex-wrap items-center gap-3 border-b border-steel-100 bg-steel-50 px-4 py-3">
+      <label className="flex items-center gap-2 text-sm text-ink"><input type="checkbox" checked={ignoreEtPrefix} disabled={busy} onChange={e => setPrefixRule(e.target.checked)} /> Reconocer ET- sólo para este proveedor</label>
+      <button disabled={busy || !ignoreEtPrefix} onClick={applyPrefixRule} className="rounded bg-teal-500 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{busy ? "Procesando…" : "Aplicar a esta comparación"}</button>
+      <p className="w-full text-xs text-steel-600">{ignoreEtPrefix ? "Regla activada. Podés aplicarla a los faltantes actuales sin volver a importar la lista. Se vinculan sólo códigos base únicos; los casos dudosos quedan para revisión." : "Regla desactivada. Si este proveedor usa ET-CODIGO para tu CODIGO, activala aquí y aplicala a esta comparación."}</p>
     </div>
     <p role="status" className="px-4 py-2 text-xs text-teal-600">{notice || "Tu posición y tus búsquedas se guardan en este navegador."}</p>
     {error && <p role="alert" className="mx-4 mb-3 rounded bg-danger-50 p-3 text-sm text-danger-500">{error}</p>}
@@ -134,7 +171,7 @@ export default function CatalogGapReview({ session, products, items, onRefresh, 
           {!visible.length && <p className="p-4 text-sm text-steel-600">{catalogQuery ? "No hay artículos con esa búsqueda." : view === "pending" && deferredCount ? "Terminaste los pendientes. Revisá los que dejaste para después." : "No hay artículos en este filtro."}</p>}
         </div>
       </div>
-      <div className="flex min-h-0 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-col">
         {active ? <>
           <div className="space-y-3 border-b border-steel-100 p-4">
             <div className="flex flex-wrap items-center gap-2">
@@ -153,7 +190,7 @@ export default function CatalogGapReview({ session, products, items, onRefresh, 
           </div>
           <div ref={candidateRef} className="max-h-96 min-h-0 flex-1 space-y-2 overflow-y-auto bg-steel-50 p-3 md:max-h-none" aria-busy={busy}>
             {candidates.slice(0, limit).map(({ item, prefixMatch }) => <div key={item.id} className="flex flex-wrap items-center gap-2 rounded border border-steel-200 bg-white p-3">
-              <div className="min-w-0 flex-1">{prefixMatch && <p className="mb-1 text-xs font-semibold text-teal-600">Mismo código con/sin ET- · verificar presentación</p>}<p className="text-sm font-medium text-ink">{item.supplier_description}</p><p className="mono-num mt-1 text-xs text-steel-600">{item.supplier_code} · {item.parsed_price !== null ? formatPrice(item.parsed_price, item.supplier_currency ?? active.currency) : item.raw_price}</p></div>
+              <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">{prefixMatch && <p className="mb-1 text-xs font-semibold text-teal-600">Mismo código con/sin ET- · verificar presentación</p>}<p className="text-sm font-medium text-ink">{item.supplier_description}</p><p className="mono-num mt-1 text-xs text-steel-600">{item.supplier_code} · {item.parsed_price !== null ? formatPrice(item.parsed_price, item.supplier_currency ?? active.currency) : item.raw_price}</p></div>
               <button disabled={busy} onClick={() => link(item)} className="rounded bg-teal-500 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-600 disabled:opacity-50">{busy ? "Guardando…" : "Vincular y seguir"}</button>
             </div>)}
             {!candidates.length && <p className="p-3 text-sm text-steel-600">{!items.length ? "No quedan artículos del proveedor sin vincular." : "Sin coincidencias. Probá otra palabra o código, o dejalo para después."}</p>}
