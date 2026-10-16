@@ -1,5 +1,8 @@
+import { beginUndoAction } from "./undoHistory";
+import { productVariantKey } from "./productVariants";
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import type {
+  UndoAction,
   ComparisonSession,
   DiscontinuedCode,
   Equivalence,
@@ -13,7 +16,8 @@ import type {
   PresentationRule,
 } from "@/types/database";
 
-interface PriceCoreDB extends DBSchema {
+export interface PriceCoreDB extends DBSchema {
+  undoHistory: { key: string; value: UndoAction };
   suppliers: { key: string; value: Supplier };
   supplierColumnConfig: { key: string; value: SupplierColumnConfig; indexes: { bySupplier: string } };
   products: {
@@ -40,7 +44,7 @@ interface PriceCoreDB extends DBSchema {
 }
 
 const DB_NAME = "pricecore";
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 
 let dbPromise: Promise<IDBPDatabase<PriceCoreDB>> | null = null;
 
@@ -85,6 +89,13 @@ export function getDB(): Promise<IDBPDatabase<PriceCoreDB>> {
           if (!s.indexNames.contains("bySupplierCode")) s.createIndex("bySupplierCode", ["supplier_id", "code"], { unique: true });
           if (!s.indexNames.contains("bySupplier")) s.createIndex("bySupplier", "supplier_id");
         }
+        // v6: un mismo código puede tener varias presentaciones; nunca borrar el catálogo.
+        const variantStore = transaction.objectStore("products");
+        if (variantStore.index("bySupplierCode").unique) {
+          variantStore.deleteIndex("bySupplierCode");
+          variantStore.createIndex("bySupplierCode", ["supplier_id", "code"]);
+        }
+        if (!db.objectStoreNames.contains("undoHistory")) db.createObjectStore("undoHistory", { keyPath: "id" });
         // v5: índices auxiliares para búsquedas rápidas y para evitar cargar
         // catálogos completos sólo para filtrar por texto.
         const productsStore = transaction.objectStore("products");
@@ -189,13 +200,23 @@ export const presentationRulesRepo = {
   async create(input: Omit<PresentationRule, "id" | "created_at" | "updated_at">): Promise<PresentationRule> {
     const db = await getDB(); const now = nowISO();
     const row = { ...input, id: newId(), created_at: now, updated_at: now };
-    await db.put("presentationRules", row); return row;
+    const tx = db.transaction(["presentationRules", "undoHistory"], "readwrite");
+    const finish = await beginUndoAction(tx, "Crear regla de presentación", { supplierId: input.supplier_id, ruleIds: [row.id] });
+    await tx.objectStore("presentationRules").put(row); await finish(); await tx.done; return row;
   },
   async update(id: string, patch: Partial<PresentationRule>): Promise<void> {
-    const db = await getDB(); const current = await db.get("presentationRules", id);
-    if (current) await db.put("presentationRules", { ...current, ...patch, updated_at: nowISO() });
+    const db = await getDB(); const tx = db.transaction(["presentationRules", "undoHistory"], "readwrite");
+    const current = await tx.objectStore("presentationRules").get(id);
+    if (!current) throw new Error("La regla ya no está disponible.");
+    const finish = await beginUndoAction(tx, "Editar regla de presentación", { supplierId: current.supplier_id, ruleIds: [id] });
+    await tx.objectStore("presentationRules").put({ ...current, ...patch, updated_at: nowISO() }); await finish(); await tx.done;
   },
-  async remove(id: string): Promise<void> { const db = await getDB(); await db.delete("presentationRules", id); },
+  async remove(id: string): Promise<void> {
+    const db = await getDB(); const tx = db.transaction(["presentationRules", "undoHistory"], "readwrite");
+    const current = await tx.objectStore("presentationRules").get(id); if (!current) return;
+    const finish = await beginUndoAction(tx, "Eliminar regla de presentación", { supplierId: current.supplier_id, ruleIds: [id] });
+    await tx.objectStore("presentationRules").delete(id); await finish(); await tx.done;
+  },
 };
 
 export const discontinuedCodesRepo = {
@@ -222,9 +243,11 @@ export const discontinuedCodesRepo = {
     });
   },
   async unmark(supplierId: string, supplierCode: string): Promise<void> {
-    const db = await getDB();
-    const existing = await db.getAllFromIndex("discontinuedCodes", "bySupplierCode", [supplierId, supplierCode]);
-    await Promise.all(existing.map((e) => db.delete("discontinuedCodes", e.id)));
+    const db = await getDB(); const tx = db.transaction(["discontinuedCodes", "equivalences", "undoHistory"], "readwrite");
+    const finish = await beginUndoAction(tx, "Rehabilitar código discontinuado", { supplierId, supplierCodes: [supplierCode] });
+    const existing = await tx.objectStore("discontinuedCodes").index("bySupplierCode").getAll([supplierId, supplierCode]);
+    for (const row of existing) await tx.objectStore("discontinuedCodes").delete(row.id);
+    await finish(); await tx.done;
   },
 };
 
@@ -289,10 +312,13 @@ export const suppliersRepo = {
   },
   async update(id: string, patch: Partial<Supplier>): Promise<Supplier> {
     const db = await getDB();
-    const current = await db.get("suppliers", id);
+    const tx = db.transaction(["suppliers", "undoHistory"], "readwrite");
+    const current = await tx.objectStore("suppliers").get(id);
     if (!current) throw new Error("Proveedor no encontrado.");
+    const finishUndo = await beginUndoAction(tx, `Editar proveedor ${current.name}`, { supplierId: id, includeSupplier: true });
     const next: Supplier = { ...current, ...patch, updated_at: nowISO() };
-    await db.put("suppliers", next);
+    await tx.objectStore("suppliers").put(next);
+    await finishUndo(); await tx.done;
     return next;
   },
   async archive(id: string): Promise<void> { await this.update(id, { active: false, deleted_at: nowISO() }); },
@@ -335,69 +361,43 @@ export const productsRepo = {
   },
   async getByCode(supplierId: string, code: string): Promise<Product | undefined> {
     const db = await getDB();
-    return db.getFromIndex("products", "bySupplierCode", [supplierId, code]);
+    const rows = await db.getAllFromIndex("products", "bySupplierCode", [supplierId, code]);
+    return rows.length === 1 ? rows[0] : undefined;
   },
   /** Inserta o actualiza por código DENTRO de la carpeta de un proveedor. */
   async upsertByCode(
     supplierId: string,
     input: Omit<Product, "id" | "created_at" | "updated_at" | "supplier_id">
   ): Promise<Product> {
-    const db = await getDB();
-    const existing = await db.getFromIndex("products", "bySupplierCode", [supplierId, input.code]);
-    const now = nowISO();
-    const normalized_code = normalizeCodeForDB(input.code);
-    const record: Product = existing
-      ? { ...existing, ...input, normalized_code, supplier_id: supplierId, updated_at: now }
-      : { ...input, normalized_code, supplier_id: supplierId, id: newId(), created_at: now, updated_at: now };
-    await db.put("products", record);
-    return record;
+    const { records } = await this.bulkUpsertByCode(supplierId, [input]);
+    return records[0];
   },
-  /**
-   * Importación masiva en una sola transacción, todo dentro de la carpeta de
-   * `supplierId`. Si el archivo trae el mismo código repetido más de una vez
-   * (típico error de un Excel mal armado), no dejamos que eso reviente la
-   * transacción entera contra el índice único: nos quedamos con la ÚLTIMA
-   * fila de cada código y devolvemos la lista de códigos repetidos para que
-   * la pantalla se lo muestre al usuario.
-   */
+  /** Actualiza por código + presentación. Sólo colapsa filas de la misma variante. */
   async bulkUpsertByCode(
     supplierId: string,
     inputs: Omit<Product, "id" | "created_at" | "updated_at" | "supplier_id">[]
   ): Promise<{ records: Product[]; duplicatesInFile: DuplicateCodeInFile[] }> {
-    if (inputs.length === 0) return { records: [], duplicatesInFile: [] };
-
+    if (!inputs.length) return { records: [], duplicatesInFile: [] };
     const db = await getDB();
-    const existing = await db.getAllFromIndex("products", "bySupplier", supplierId);
-    const byCode = new Map(existing.map((product) => [product.code, product]));
-    const now = nowISO();
-
-    // Detectar códigos repetidos dentro del propio archivo antes de pisarlos
-    // en silencio.
-    const countInFile = new Map<string, number>();
-    for (const input of inputs) countInFile.set(input.code, (countInFile.get(input.code) ?? 0) + 1);
-    const duplicatesInFile: DuplicateCodeInFile[] = [...countInFile.entries()]
-      .filter(([, count]) => count > 1)
-      .map(([code, count]) => ({ code, count }));
-
-    // De haber repetidos, nos quedamos con la última aparición de cada
-    // código (es el comportamiento más predecible: "lo último que dice el
-    // archivo gana"), en vez de que la fila anterior gane por orden de
-    // llegada a la transacción o que la escritura falle a mitad de camino.
-    const lastByCode = new Map<string, (typeof inputs)[number]>();
-    for (const input of inputs) lastByCode.set(input.code, input);
-
-    const records = [...lastByCode.values()].map((input) => {
-      const old = byCode.get(input.code);
-      const normalized_code = normalizeCodeForDB(input.code);
-      return old
-        ? { ...old, ...input, normalized_code, supplier_id: supplierId, updated_at: now }
-        : { ...input, normalized_code, supplier_id: supplierId, id: newId(), created_at: now, updated_at: now };
-    });
-
     const tx = db.transaction("products", "readwrite");
-    await Promise.all(records.map((record) => tx.store.put(record)));
+    const existing = await tx.store.index("bySupplier").getAll(supplierId);
+    const byVariant = new Map(existing.map(p => [productVariantKey(p), p]));
+    const lastByVariant = new Map<string, (typeof inputs)[number]>();
+    const counts = new Map<string, { code: string; count: number }>();
+    for (const input of inputs) {
+      const key = productVariantKey(input);
+      lastByVariant.set(key, input);
+      const old = counts.get(key); counts.set(key, { code: input.code, count: (old?.count ?? 0) + 1 });
+    }
+    const now = nowISO();
+    const records = [...lastByVariant].map(([key, input]) => {
+      const old = byVariant.get(key);
+      return old ? { ...old, ...input, supplier_id: supplierId, normalized_code: normalizeCodeForDB(input.code), updated_at: now }
+        : { ...input, supplier_id: supplierId, normalized_code: normalizeCodeForDB(input.code), id: newId(), created_at: now, updated_at: now };
+    });
+    for (const record of records) await tx.store.put(record);
     await tx.done;
-    return { records, duplicatesInFile };
+    return { records, duplicatesInFile: [...counts.values()].filter(c => c.count > 1) };
   },
   async get(id: string): Promise<Product | undefined> {
     const db = await getDB();

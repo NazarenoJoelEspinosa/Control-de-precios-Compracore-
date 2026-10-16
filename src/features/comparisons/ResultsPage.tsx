@@ -1,3 +1,5 @@
+import { updateComparisonLimits } from "@/lib/updateComparisonLimits";
+import { buildGapReasons, type GapReason } from "@/lib/gapReasons";
 import { presentationReviewReason } from "@/lib/presentationReview";
 import { matchesResultFilters, type ResultView, type ReviewKind, type ExtraFilter } from "@/lib/resultFilters";
 import PresentationReview from "./PresentationReview";
@@ -5,7 +7,7 @@ import { priceIssue } from "@/lib/pricePolicy";
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import clsx from "clsx";
-import { comparisonSessionsRepo, priceChangesRepo, priceListItemsRepo, productsRepo, suppliersRepo } from "@/lib/db";
+import { comparisonSessionsRepo, priceChangesRepo, priceListItemsRepo, productsRepo, suppliersRepo, equivalencesRepo, discontinuedCodesRepo } from "@/lib/db";
 import { MatchStateBadge, PriceDeltaBadge, ChangeStatusBadge } from "@/components/ui/StatusBadges";
 import PresentationConversionEditor from "@/components/PresentationConversionEditor";
 import { convertPresentationPrice } from "@/lib/presentationConversions";
@@ -56,6 +58,7 @@ export default function ResultsPage() {
   const [rows, setRows] = useState<ExportRow[]>([]);
   const [catalogGaps, setCatalogGaps] = useState<Product[]>([]);
   const [ignoreEtPrefix, setIgnoreEtPrefix] = useState(false);
+  const [gapReasons, setGapReasons] = useState<Record<string, GapReason>>({});
   const [catalogTotal, setCatalogTotal] = useState(0);
   const [showCatalogGaps, setShowCatalogGaps] = useState(false);
   const [view, setView] = useState<ResultView>("all");
@@ -68,11 +71,18 @@ export default function ResultsPage() {
   const [exporting, setExporting] = useState<"all" | "approved" | null>(null);
   const [actionError, setActionError] = useState("");
   const [deciding, setDeciding] = useState(false);
+  const [restoreEpoch, setRestoreEpoch] = useState(0);
   const [loading, setLoading] = useState(true);
   const [visibleCount, setVisibleCount] = useState(300);
 
   useEffect(() => {
     if (sessionId) load();
+  }, [sessionId]);
+
+  useEffect(() => {
+    const restored = () => { setRestoreEpoch(v => v + 1); setSelected(null); void load(true).catch(e => setActionError(e.message)); };
+    window.addEventListener("pricecore:restored", restored);
+    return () => window.removeEventListener("pricecore:restored", restored);
   }, [sessionId]);
 
   async function load(background = false) {
@@ -110,7 +120,10 @@ export default function ResultsPage() {
     // "sí apareció".
     const catalogProducts = (await productsRepo.listBySupplier(sessionData.supplier_id)).filter((p) => p.active);
     const matchedProductIds = new Set(items.flatMap((i) => i.matched_presentations?.map(c => c.product_id) ?? [i.matched_product_id]).filter(Boolean) as string[]);
-    setCatalogGaps(catalogProducts.filter((p) => !matchedProductIds.has(p.id)));
+    const gaps = catalogProducts.filter((p) => !matchedProductIds.has(p.id));
+    setCatalogGaps(gaps);
+    const [equivalences, discontinued] = await Promise.all([equivalencesRepo.listForSupplier(sessionData.supplier_id), discontinuedCodesRepo.listForSupplier(sessionData.supplier_id)]);
+    setGapReasons(buildGapReasons(gaps, items, supplier?.ignore_et_prefix === true, equivalences, discontinued));
     setCatalogTotal(catalogProducts.length);
 
     setLoading(false);
@@ -166,6 +179,7 @@ export default function ResultsPage() {
   // encontrados", no acá.
   const pendingReviewCount = new Set(rows.filter((r) => ["review", "presentation_diff"].includes(r.item.match_state)).map(r => r.item.id)).size;
 
+  const identifiedOwnCount = new Set(rows.filter(r => r.item.match_state === "safe" && r.product?.active).map(r => r.product!.id)).size;
   const presentationReviewCount = new Set(rows.filter(r => presentationReviewReason(r.item, r.product, r.change)).map(r => r.item.id)).size;
   const allReviewCount = new Set(rows.filter(r => matchesResultFilters(r, "review", "all", "all")).map(r => r.item.id)).size;
 
@@ -185,6 +199,13 @@ export default function ResultsPage() {
     finally { setDeciding(false); }
   }
 
+  async function refreshLimits() {
+    if (!session || deciding) return;
+    setDeciding(true); setActionError("");
+    try { await updateComparisonLimits(session.id); await load(true); }
+    catch (e) { setActionError(e instanceof Error ? e.message : "No se pudieron actualizar los límites."); }
+    finally { setDeciding(false); }
+  }
   async function handleDeleteSession() {
     if (!session) return;
     if (!window.confirm("¿Eliminar esta comparación? Se borra de forma permanente, junto con todos sus resultados.")) return;
@@ -254,7 +275,7 @@ export default function ResultsPage() {
         </div>
       </div>
 
-      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-7">
+      <details className="mb-4 text-xs text-steel-600"><summary className="cursor-pointer">Datos de la lista del proveedor · {session.total_items.toLocaleString("es-AR")} filas</summary><div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-7">
         <MiniStat label="Filas del proveedor" value={session.total_items} hint="ítems de la lista del proveedor" />
         <MiniStat label="Productos identificados" value={session.safe_matches} tone="text-success-500" />
         <MiniStat label="Por revisar" value={allReviewCount} tone="text-amber-600" />
@@ -278,15 +299,30 @@ export default function ResultsPage() {
             clickable
           />
         </button>
-      </div>
+      </div></details>
+
+      <section aria-label="Avance de la comparación" className="panel mb-4 p-4">
+        <h2 className="mb-3 text-sm font-semibold">Tu avance</h2>
+        <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
+          <button onClick={() => { setPresentationReview(null); setShowCatalogGaps(false); setView("all"); setFilter("safe"); setSearch(""); setReviewKind("all"); }} className="rounded bg-steel-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{identifiedOwnCount}</strong>artículos propios identificados</button>
+          <button onClick={() => setPresentationReview({})} className="rounded bg-amber-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{presentationReviewCount}</strong>presentaciones por revisar</button>
+          <button onClick={() => { setPresentationReview(null); setShowCatalogGaps(true); }} className="rounded bg-violet-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{catalogGaps.length}</strong>faltantes de mi catálogo</button>
+          <button onClick={() => { setPresentationReview(null); setShowCatalogGaps(false); setView("pending"); setFilter("all"); setSearch(""); }} className="rounded bg-teal-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{rows.filter(r => matchesResultFilters(r, "pending", "all", "all")).length}</strong>precios listos para aprobar</button>
+          <button onClick={() => { setPresentationReview(null); setShowCatalogGaps(false); setView("approved"); setFilter("all"); setSearch(""); }} className="rounded bg-steel-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{rows.filter(r => matchesResultFilters(r, "approved", "all", "all")).length}</strong>precios aprobados</button>
+        </div>
+        <div className="mt-3"><label htmlFor="catalog-progress" className="mb-1 block text-xs text-steel-600">Catálogo identificado: {catalogTotal ? Math.round(identifiedOwnCount / catalogTotal * 100) : 0}% · {identifiedOwnCount} de {catalogTotal} artículos propios. Una fila del proveedor puede identificar varias presentaciones.</label><progress id="catalog-progress" max={Math.max(1, catalogTotal)} value={identifiedOwnCount} className="h-2 w-full accent-teal-500" /></div>
+        <details className="mt-2 text-xs text-steel-600"><summary className="cursor-pointer">Límites de los avisos de precio</summary><p className="mt-2">Esta comparación avisa desde +{rows[0]?.item.presentation_limits?.increase ?? 100}% / −{rows[0]?.item.presentation_limits?.decrease ?? 50}%. Podés editar los límites en la ficha del proveedor y aplicarlos aquí.</p><button disabled={deciding} onClick={refreshLimits} className="mt-2 rounded border border-steel-200 px-3 py-2 text-teal-600 disabled:opacity-50">Actualizar límites del proveedor</button></details>
+      </section>
 
       {presentationReview ? (
-        <PresentationReview session={session} rows={rows} initialItemId={presentationReview.initialItemId} onRefresh={() => load(true)} onClose={() => setPresentationReview(null)} />
+        <PresentationReview key={`${session.id}:${restoreEpoch}`} session={session} rows={rows} initialItemId={presentationReview.initialItemId} onRefresh={() => load(true)} onClose={() => setPresentationReview(null)} />
       ) : showCatalogGaps ? (
         <CatalogGapReview
-          key={session.id}
+          key={`${session.id}:${restoreEpoch}`}
           session={session}
           products={catalogGaps}
+          reasons={gapReasons}
+          onTeachPresentations={itemId => setPresentationReview({ initialItemId: itemId })}
           ignoreEtPrefix={ignoreEtPrefix}
           items={notFoundItems}
           onRefresh={() => load(true)}
@@ -372,6 +408,7 @@ export default function ResultsPage() {
                 <td className="px-3 py-2">
                   <div className="space-y-1">
                     <MatchStateBadge state={row.item.match_state} />
+                    {row.item.review_reason && ["review", "presentation_diff", "not_found"].includes(row.item.match_state) && <p className="max-w-xs text-xs text-steel-600">{row.item.review_reason}</p>}
                     {presentationReviewReason(row.item, row.product, row.change) && <p className="max-w-xs text-xs font-semibold text-amber-600">Revisar presentación</p>}
                     {priceIssue(row.item, row.product) ? <p className="max-w-xs text-xs font-medium text-danger-500">{priceIssue(row.item, row.product)}</p> : presentationReviewReason(row.item, row.product, row.change) ? <span className="block text-xs text-steel-600">Precio sin confirmar</span> : row.change?.diff_absolute === 0 ? <span className="block text-xs text-steel-600">Sin cambio de precio</span> : row.change ? <ChangeStatusBadge status={row.change.status} /> : row.product && row.item.match_state === "safe" ? <span className="block text-xs text-steel-600">Sin cambio de precio</span> : null}
                   </div>
@@ -525,6 +562,7 @@ function ProductDrawer({
           <Field label="Método" value={matchLevelLabel(row.item.match_level)} />
           <div className="space-y-1">
                     <MatchStateBadge state={row.item.match_state} />
+                    {row.item.review_reason && ["review", "presentation_diff", "not_found"].includes(row.item.match_state) && <p className="max-w-xs text-xs text-steel-600">{row.item.review_reason}</p>}
                     {presentationReviewReason(row.item, row.product, row.change) && <p className="max-w-xs text-xs font-semibold text-amber-600">Revisar presentación</p>}
                     {priceIssue(row.item, row.product) ? <p className="max-w-xs text-xs font-medium text-danger-500">{priceIssue(row.item, row.product)}</p> : presentationReviewReason(row.item, row.product, row.change) ? <span className="block text-xs text-steel-600">Precio sin confirmar</span> : row.change?.diff_absolute === 0 ? <span className="block text-xs text-steel-600">Sin cambio de precio</span> : row.change ? <ChangeStatusBadge status={row.change.status} /> : row.product && row.item.match_state === "safe" ? <span className="block text-xs text-steel-600">Sin cambio de precio</span> : null}
                   </div>

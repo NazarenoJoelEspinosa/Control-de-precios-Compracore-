@@ -1,3 +1,4 @@
+import { beginUndoAction } from "./undoHistory";
 import { presentationReviewReason } from "./presentationReview";
 import { getDB } from "./db";
 import { comparisonStats } from "./comparisonStats";
@@ -18,11 +19,12 @@ export async function markDiscontinued(session: ComparisonSession, item: PriceLi
 
 async function resolve(session: ComparisonSession, item: PriceListItem, action: "confirm" | "reject" | "discontinue", productId?: string): Promise<void> {
   const db = await getDB();
-  const tx = db.transaction(["products", "priceListItems", "priceChanges", "equivalences", "discontinuedCodes", "comparisonSessions"], "readwrite");
+  const tx = db.transaction(["products", "priceListItems", "priceChanges", "equivalences", "discontinuedCodes", "comparisonSessions", "undoHistory"], "readwrite");
   try {
     const currentSession = await tx.objectStore("comparisonSessions").get(session.id);
     const current = await tx.objectStore("priceListItems").get(item.id);
     if (!currentSession || !current || currentSession.price_list_id !== current.price_list_id) throw new Error("La comparación ya no está disponible.");
+    const finishUndo = await beginUndoAction(tx, action === "confirm" ? "Vincular artículo" : action === "reject" ? "Rechazar coincidencia" : "Marcar discontinuado", { sessionId: session.id, supplierId: currentSession.supplier_id, itemIds: [item.id], supplierCodes: [current.supplier_code] });
     const catalog = await tx.objectStore("products").index("bySupplier").getAll(currentSession.supplier_id);
     const product = productId ? catalog.find(p => p.id === productId && p.active) : null;
     if (action === "confirm" && !product) throw new Error("El artículo debe estar activo y pertenecer a este proveedor.");
@@ -40,7 +42,7 @@ async function resolve(session: ComparisonSession, item: PriceListItem, action: 
       const old = await tx.objectStore("discontinuedCodes").index("bySupplierCode").getAll([currentSession.supplier_id, current.supplier_code]);
       if (!old.length) await tx.objectStore("discontinuedCodes").put({ id: crypto.randomUUID(), supplier_id: currentSession.supplier_id, supplier_code: current.supplier_code, created_at: now });
     }
-    const updated: PriceListItem = { ...current, matched_presentations: action === "confirm" && current.matched_product_id === productId ? current.matched_presentations : undefined,
+    const updated: PriceListItem = { ...current, review_reason: action === "reject" ? "Coincidencia rechazada manualmente." : "", matched_presentations: action === "confirm" && current.matched_product_id === productId ? current.matched_presentations : undefined,
       matched_product_id: product?.id ?? null, match_state: action === "confirm" ? "safe" : action === "reject" ? "not_found" : "discontinued",
       match_level: action === "confirm" ? "equivalence" : "none", match_score: action === "confirm" ? 100 : null };
     await tx.objectStore("priceListItems").put(updated);
@@ -57,6 +59,7 @@ async function resolve(session: ComparisonSession, item: PriceListItem, action: 
     }
     const items = await tx.objectStore("priceListItems").index("byPriceList").getAll(current.price_list_id);
     await tx.objectStore("comparisonSessions").put({ ...currentSession, ...comparisonStats(items, kept, catalog) });
+    await finishUndo();
     await tx.done;
   } catch (error) {
     try { tx.abort(); } catch { /* Ya abortada por IndexedDB. */ }
@@ -71,7 +74,7 @@ export async function decidePriceChange(changeId: string, status: "approved" | "
 export async function decidePriceChanges(changeIds: string[], status: "approved" | "rejected"): Promise<void> {
   if (!changeIds.length) return;
   const db = await getDB();
-  const tx = db.transaction(["products", "priceListItems", "priceChanges", "comparisonSessions"], "readwrite");
+  const tx = db.transaction(["products", "priceListItems", "priceChanges", "comparisonSessions", "undoHistory"], "readwrite");
   try {
     const selected = await Promise.all([...new Set(changeIds)].map(id => tx.objectStore("priceChanges").get(id)));
     if (selected.some(c => !c)) throw new Error("Algún cambio ya no existe.");
@@ -79,6 +82,7 @@ export async function decidePriceChanges(changeIds: string[], status: "approved"
     if (sessionIds.size !== 1) throw new Error("Elegí cambios de una sola comparación.");
     const session = await tx.objectStore("comparisonSessions").get(selected[0]!.comparison_session_id);
     if (!session) throw new Error("La comparación ya no existe.");
+    const finishUndo = await beginUndoAction(tx, `${status === "approved" ? "Aprobar" : "Rechazar"} ${selected.length} precio(s)`, { sessionId: session.id, supplierId: session.supplier_id, itemIds: selected.map(c => c!.price_list_item_id) });
     const [items, products] = await Promise.all([
       tx.objectStore("priceListItems").index("byPriceList").getAll(session.price_list_id),
       tx.objectStore("products").index("bySupplier").getAll(session.supplier_id),
@@ -97,6 +101,7 @@ export async function decidePriceChanges(changeIds: string[], status: "approved"
     }
     const changes = await tx.objectStore("priceChanges").index("bySession").getAll(session.id);
     await tx.objectStore("comparisonSessions").put({ ...session, ...comparisonStats(items, changes, products) });
+    await finishUndo();
     await tx.done;
   } catch (error) {
     try { tx.abort(); } catch { /* Ya abortada. */ }

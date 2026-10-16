@@ -79,6 +79,7 @@ export default function PresentationReview({ session, rows, initialItemId, onRef
             <div><p className="eyebrow mb-1">Mi artículo</p><h3 className="text-sm font-semibold">{current.product?.description ?? "Elegí el artículo de tu catálogo"}</h3><p className="mono-num mt-1 text-xs">{current.product?.code}</p><p className="mt-1 text-sm">{current.product ? formatPrice(current.change?.old_price ?? current.product.current_price, current.product.currency) : "Sin producto identificado"}</p></div>
             <div><p className="eyebrow mb-1">Proveedor</p><p className="text-sm font-semibold">{current.item.supplier_description}</p><p className="mono-num mt-1 text-xs">{current.item.supplier_code}</p><p className="mt-1 text-sm">{current.item.parsed_price !== null ? formatPrice(current.item.parsed_price, current.item.supplier_currency ?? current.product?.currency) : current.item.raw_price}</p></div>
           </div>
+          {current.item.review_reason && <p className="mb-3 rounded bg-amber-50 p-3 text-xs text-steel-600">{current.item.review_reason}</p>}
           <PresentationConversionEditor key={current.item.id} session={session} item={current.item} onResolved={saved} onBusyChange={setBusy} saveLabel="Guardar y seguir" />
           <button disabled={busy} onClick={() => {
             setProgress(p => ({ activeId: (visible[index + 1] ?? visible[index - 1])?.item.id ?? "", deferred: showDeferred ? p.deferred.filter(id => id !== current.item.id) : [...new Set([...p.deferred, current.item.id])] }));

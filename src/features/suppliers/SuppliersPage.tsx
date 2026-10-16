@@ -4,7 +4,7 @@ import type { Supplier } from "@/types/database";
 const emptySupplier = {
     name: "", code: "", email: "", phone: "", active: true,
     price_includes_vat: false, vat_rate: 21, default_currency: "ARS" as const,
-    ignore_et_prefix: false, notes: "", categories: [] as string[], conditions: "",
+    presentation_increase_percent: 100, presentation_decrease_percent: 50, ignore_et_prefix: false, notes: "", categories: [] as string[], conditions: "",
 };
 export default function SuppliersPage() {
     const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -14,7 +14,7 @@ export default function SuppliersPage() {
     const [creating, setCreating] = useState(false);
     const [loading, setLoading] = useState(true);
     async function load() { setLoading(true); setSuppliers(await suppliersRepo.list()); setLoading(false); }
-    useEffect(() => { load(); }, []);
+    useEffect(() => { load(); window.addEventListener("pricecore:restored", load); return () => window.removeEventListener("pricecore:restored", load); }, []);
     const visible = useMemo(() => suppliers
         .filter(s => showTrash ? Boolean(s.deleted_at) : !s.deleted_at)
         .filter(s => !search || `${s.name} ${s.code} ${s.email} ${s.phone}`.toLowerCase().includes(search.toLowerCase()))
@@ -71,6 +71,7 @@ function SupplierEditor({ supplier, onClose, onSaved }: {
     function set<K extends keyof typeof form>(key: K, value: (typeof form)[K]) { setForm(f => ({ ...f, [key]: value })); }
     async function submit(e: FormEvent) { e.preventDefault(); if (!form.name.trim())
         return; setSaving(true); setError(null); try {
+        if (!Number.isFinite(form.presentation_increase_percent) || form.presentation_increase_percent <= 0 || !Number.isFinite(form.presentation_decrease_percent) || form.presentation_decrease_percent <= 0 || form.presentation_decrease_percent >= 100) throw new Error("La suba debe ser positiva y la baja debe estar entre 0 y 100, sin incluirlos.");
         const payload = { ...form, name: form.name.trim(), categories: categoryText.split(",").map(x => x.trim()).filter(Boolean) };
         if (supplier)
             await suppliersRepo.update(supplier.id, payload);
@@ -94,6 +95,7 @@ function SupplierEditor({ supplier, onClose, onSaved }: {
       <Field label="Moneda predeterminada de la lista"><select value={form.default_currency} onChange={e => set("default_currency", e.target.value as "ARS" | "USD")}><option value="ARS">ARS</option><option value="USD">USD</option></select></Field>
       <Field label="Categorías (separadas por coma)"><input value={categoryText} onChange={e => setCategoryText(e.target.value)} placeholder="Herramientas, abrasivos..."/></Field>
     </div>
+    <fieldset className="mt-4 rounded border border-steel-100 p-3"><legend className="px-1 text-sm font-semibold">Avisos de presentación de este proveedor</legend><div className="grid gap-3 sm:grid-cols-2"><label className="text-xs">Avisar desde una suba de (%)<input aria-label="Límite de suba del proveedor" type="number" min="0.01" step="any" value={form.presentation_increase_percent ?? 100} onChange={e => set("presentation_increase_percent", Number(e.target.value))} className="field-control mt-1 w-full" /></label><label className="text-xs">Avisar desde una baja de (%)<input aria-label="Límite de baja del proveedor" type="number" min="0.01" max="99.99" step="any" value={form.presentation_decrease_percent ?? 50} onChange={e => set("presentation_decrease_percent", Number(e.target.value))} className="field-control mt-1 w-full" /></label></div><p className="mt-2 text-xs text-steel-600">Se usan en próximas comparaciones. En una comparación existente podés tocar «Actualizar límites del proveedor». No cambian las cantidades ya enseñadas.</p></fieldset>
     <div className="mt-4 rounded border border-steel-100 bg-steel-50 p-3">
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.ignore_et_prefix ?? false} onChange={e => set("ignore_et_prefix", e.target.checked)}/> Reconocer códigos con/sin ET- para este proveedor</label>
       <p className="mt-1 text-xs text-steel-600">Ejemplo: ET-ABC123 y ABC123. Activá esta regla sólo si este proveedor usa ese prefijo. Se conserva el código original.</p>

@@ -1,3 +1,4 @@
+import { beginUndoAction } from "./undoHistory";
 import { comparisonStats } from "./comparisonStats";
 import { priceIssue } from "./pricePolicy";
 import { getDB } from "./db";
@@ -11,11 +12,12 @@ export async function savePresentations(session: ComparisonSession, item: PriceL
   if (ids.size !== conversions.length) throw new Error("No repitas un artículo en la misma relación.");
   for (const c of conversions) validateQuantities(c.supplier_quantity, c.own_quantity);
   const db = await getDB();
-  const tx = db.transaction(["products", "equivalences", "priceListItems", "priceChanges", "comparisonSessions", "discontinuedCodes"], "readwrite");
+  const tx = db.transaction(["products", "equivalences", "priceListItems", "priceChanges", "comparisonSessions", "discontinuedCodes", "undoHistory"], "readwrite");
   try {
     const currentSession = await tx.objectStore("comparisonSessions").get(session.id);
     const currentItem = await tx.objectStore("priceListItems").get(item.id);
     if (!currentSession || !currentItem || currentSession.price_list_id !== currentItem.price_list_id || currentSession.supplier_id !== session.supplier_id) throw new Error("La comparación ya no está disponible.");
+    const finishUndo = await beginUndoAction(tx, `Enseñar ${conversions.length} presentación(es) de ${currentItem.supplier_code}`, { sessionId: session.id, supplierId: session.supplier_id, itemIds: [item.id], supplierCodes: [currentItem.supplier_code] });
     // Una relación específica enseñada por el usuario resuelve un conflicto de reglas generales.
     const resolvedItem = { ...currentItem, comparison_error: null };
     const products = await Promise.all(conversions.map(c => tx.objectStore("products").get(c.product_id)));
@@ -44,11 +46,13 @@ export async function savePresentations(session: ComparisonSession, item: PriceL
     for (const old of oldForItem) await tx.objectStore("priceChanges").delete(old.id);
     for (const change of changes) await tx.objectStore("priceChanges").put(change);
     await tx.objectStore("priceListItems").put({ ...resolvedItem, matched_presentations: conversions,
+      review_reason: "", candidate_product_ids: undefined,
       matched_product_id: conversions[0].product_id, match_level: "equivalence", match_score: 100, match_state: "safe" });
     const items = await tx.objectStore("priceListItems").index("byPriceList").getAll(currentItem.price_list_id);
     const allChanges = [...oldChanges.filter(c => c.price_list_item_id !== item.id), ...changes];
     const catalog = await tx.objectStore("products").index("bySupplier").getAll(session.supplier_id);
     await tx.objectStore("comparisonSessions").put({ ...currentSession, ...comparisonStats(items, allChanges, catalog) });
+    await finishUndo();
     await tx.done;
   } catch (error) {
     try { tx.abort(); } catch { /* La transacción puede haber abortado automáticamente. */ }

@@ -64,6 +64,8 @@ export async function importBackup(payload: BackupPayload): Promise<void> {
     throw new Error("Formato de backup no reconocido.");
   }
   const db = await getDB();
+  // Importar datos externos invalida el historial reversible anterior.
+  await db.clear("undoHistory");
   for (const store of STORES) {
     const records = payload[store] as { id: string }[] | undefined;
     if (!records) continue;

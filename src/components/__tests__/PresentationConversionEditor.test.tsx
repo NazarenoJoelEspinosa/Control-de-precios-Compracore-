@@ -35,6 +35,16 @@ describe("enseñar presentaciones", () => {
     await act(async () => { await saveButton().props.onClick(); });
     expect(vi.mocked(savePresentations).mock.calls[0][2]).toHaveLength(2);
   });
+  it("mantiene tres artículos con el mismo código y comparte la cantidad del proveedor", async () => {
+    vi.mocked(productsRepo.listBySupplier).mockResolvedValue([100, 10, 1].map(q => ({ ...product, id: `p${q}`, code: "TOR", description: `Tornillo x${q}`, unit: `x${q}` })));
+    await mount({ ...item, matched_product_id: null, supplier_description: "Tornillo x1000", supplier_unit: "x1000", match_state: "presentation_diff", candidate_product_ids: ["p100", "p10", "p1"] });
+    expect(renderer.root.findAllByType("input").filter(i => i.props["aria-label"]?.startsWith("Cantidad propia TOR"))).toHaveLength(3);
+    const supplierInputs = renderer.root.findAllByType("input").filter(i => i.props["aria-label"]?.startsWith("Cantidad proveedor TOR"));
+    act(() => supplierInputs[0].props.onChange({ target: { value: "500" } }));
+    expect(renderer.root.findAllByType("input").filter(i => i.props["aria-label"]?.startsWith("Cantidad proveedor TOR")).every(i => i.props.value === "500")).toBe(true);
+    await act(async () => { await saveButton().props.onClick(); });
+    expect(vi.mocked(savePresentations).mock.calls[0][2]).toEqual([100, 10, 1].map(q => ({ product_id: `p${q}`, supplier_quantity: 500, own_quantity: q })));
+  });
   it("no deduce cantidades a partir de la diferencia de precio y conserva campos si falla el guardado", async () => {
     await mount({ ...item, supplier_description: "Abrazadera", supplier_unit: "" });
     expect(field("Cantidad proveedor EMHU2E02").props.value).toBe("");

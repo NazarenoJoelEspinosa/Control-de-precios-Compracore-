@@ -1,3 +1,4 @@
+import UndoActionBar from "./UndoActionBar";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 import clsx from "clsx";
@@ -125,7 +126,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             {status && <p className="mt-1 px-1 text-xs text-teal-600">{status}</p>}
           </div>
         </aside>
-        <main className="min-w-0 flex-1 px-4 py-5 md:px-8 md:py-8">{children}</main>
+        <main className="min-w-0 flex-1 px-4 py-5 md:px-8 md:py-8"><UndoActionBar />{children}</main>
       </div>
     </div>
   );

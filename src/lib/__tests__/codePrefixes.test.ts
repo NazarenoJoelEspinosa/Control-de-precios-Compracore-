@@ -27,7 +27,7 @@ describe("códigos con/sin ET-", () => {
   });
   it("no elige arbitrariamente si el código base pertenece a dos productos", () => {
     const result = matchItem("s", incoming("ET-ABC123"), deps([product("a", "ABC-123"), product("b", "ABC123")]));
-    expect(result).toMatchObject({ matchedProductId: null, matchState: "review" }); expect(result.candidates).toHaveLength(2);
+    expect(result).toMatchObject({ matchedProductId: null, matchState: "presentation_diff" }); expect(result.candidates).toHaveLength(2);
   });
   it("respeta rechazos previos para este código", () => {
     const d = deps([product("a", "ABC123")]); d.rejectedEquivalences.add("s::ET-ABC123::a");

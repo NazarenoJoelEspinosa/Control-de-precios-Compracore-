@@ -23,6 +23,8 @@ export interface Supplier {
   notes: string;
   /** Comparar códigos con/sin ET- únicamente para este proveedor. */
   ignore_et_prefix?: boolean;
+  presentation_increase_percent?: number;
+  presentation_decrease_percent?: number;
   /** Datos libres para que el usuario configure cada proveedor sin depender de campos rígidos. */
   categories?: string[];
   conditions?: string;
@@ -92,6 +94,9 @@ export interface PriceListItem {
   parsed_price: number | null;
   parse_error: string | null;
   matched_product_id: string | null;
+  candidate_product_ids?: string[];
+  review_reason?: string;
+  presentation_limits?: { increase: number; decrease: number };
   /** Snapshot de las presentaciones usadas en esta comparación. */
   matched_presentations?: PresentationConversion[];
   match_level: MatchLevel | null;
@@ -183,3 +188,7 @@ export interface MatchingSettings {
   remember_column_mapping?: boolean;
   auto_confirm_exact?: boolean;
 }
+
+export type UndoStore = "suppliers" | "priceListItems" | "priceChanges" | "equivalences" | "discontinuedCodes" | "comparisonSessions" | "presentationRules";
+export interface UndoPatch { store: UndoStore; id: string; before: unknown | null; after: unknown | null }
+export interface UndoAction { id: string; sequence: number; label: string; session_id?: string; supplier_id?: string; created_at: string; patches: UndoPatch[] }

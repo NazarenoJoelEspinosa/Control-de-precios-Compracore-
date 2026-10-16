@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { GapReason } from "@/lib/gapReasons";
 import clsx from "clsx";
 import { baseCode, sameCodeWithoutPrefix } from "@/lib/codePrefixes";
 import { formatPrice } from "@/lib/normalize";
@@ -19,9 +20,11 @@ function readProgress(key: string): Progress {
   } catch { return emptyProgress; }
 }
 
-export default function CatalogGapReview({ session, products, items, onRefresh, onClose, ignoreEtPrefix = false }: {
+export default function CatalogGapReview({ session, products, items, onRefresh, onClose, ignoreEtPrefix = false, reasons = {}, onTeachPresentations }: {
   session: ComparisonSession; products: Product[]; items: PriceListItem[];
   ignoreEtPrefix?: boolean;
+  reasons?: Record<string, GapReason>;
+  onTeachPresentations?: (itemId: string) => void;
   onRefresh: () => Promise<void>; onClose: () => void;
 }) {
   const storageKey = `pricecore:gap-review:${session.id}`;
@@ -180,6 +183,7 @@ export default function CatalogGapReview({ session, products, items, onRefresh, 
               <button disabled={busy || index >= visible.length - 1} onClick={() => move(1)} className="field-control disabled:opacity-40">Siguiente →</button>
             </div>
             <div><h3 className="font-semibold text-ink">{active.description}</h3><p className="mono-num text-xs text-steel-600">{active.code} · {formatPrice(active.current_price, active.currency)}</p></div>
+            {reasons[active.id] && <div className="rounded bg-amber-50 p-3 text-xs text-steel-600"><p className="font-semibold">Por qué sigue pendiente</p><p className="mt-1">{reasons[active.id].message}</p>{reasons[active.id].itemId && onTeachPresentations && <button disabled={busy} onClick={() => onTeachPresentations(reasons[active.id].itemId!)} className="mt-2 rounded bg-teal-500 px-3 py-2 font-semibold text-white">Enseñar presentaciones de esta fila</button>}</div>}
             <div className="flex flex-wrap gap-2">
               {deferred.has(active.id) ? <button disabled={busy} onClick={() => setProgress(p => ({ ...p, deferred: p.deferred.filter(id => id !== active.id) }))} className="field-control">Volver a pendientes</button> : <button disabled={busy} onClick={deferActive} className="field-control">Dejar para después →</button>}
             </div>

@@ -187,6 +187,8 @@ export interface MatchDeps {
   byExactCode: Map<string, ProductForMatch>;
   /** productos indexados por código normalizado */
   byNormalizedCode: Map<string, ProductForMatch>;
+  exactCodeCandidates?: Map<string, ProductForMatch[]>;
+  normalizedCodeCandidates?: Map<string, ProductForMatch[]>;
   /** equivalencias confirmadas: `${supplierId}::${supplierCode}` -> productId */
   confirmedEquivalences: Map<string, string>;
   /** equivalencias rechazadas, para excluirlas de sugerencias */
@@ -219,6 +221,18 @@ export function matchItem(
   const code = normalizeText(item.supplier_code).toUpperCase();
   const equivKey = `${supplierId}::${item.supplier_code}`;
 
+  const ambiguous = (products: ProductForMatch[], level: MatchLevel): MatchResult => ({
+    matchedProductId: null, matchLevel: level, matchScore: 100, matchState: "presentation_diff",
+    presentationReason: "Mismo código con varias presentaciones propias: enseñá las cantidades de cada una.",
+    candidates: products.map(product => ({ product, score: 100 })),
+  });
+  const exactOptions = deps.exactCodeCandidates?.get(code) ?? [];
+  const normalizedOptions = deps.normalizedCodeCandidates?.get(normalizeCodeForMatch(code)) ?? [];
+  if (exactOptions.length > 1 || (!exactOptions.length && normalizedOptions.length > 1)) {
+    const options = exactOptions.length ? exactOptions : normalizedOptions;
+    return ambiguous(options, exactOptions.length ? "exact_code" : "normalized_code");
+  }
+
   // Nivel 1: código exacto
   const exact = deps.byExactCode.get(code);
   if (exact) {
@@ -246,7 +260,7 @@ export function matchItem(
     .filter(p => sameCodeWithoutPrefix(p.code, code) && !deps.rejectedEquivalences.has(`${equivKey}::${p.id}`));
   if (prefixCandidates.length > 1) return {
     matchedProductId: null, matchLevel: "code_prefix", matchScore: null,
-    matchState: "review", presentationReason: "Código base ambiguo: hay varios artículos con/sin ET-.",
+    matchState: new Set(prefixCandidates.map(p => normalizeCodeForMatch(p.code))).size === 1 ? "presentation_diff" : "review", presentationReason: "Código base ambiguo: hay varios artículos con/sin ET-. Revisá sus presentaciones.",
     candidates: prefixCandidates.map(product => ({ product, score: 95 })),
   };
   if (prefixCandidates.length === 1) {

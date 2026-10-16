@@ -1,3 +1,4 @@
+import { editLearnedRelation, forgetLearnedRelation } from "@/lib/learnedRelationActions";
 import { useEffect, useMemo, useState } from "react";
 import { discontinuedCodesRepo, equivalencesRepo, presentationRulesRepo, productsRepo, suppliersRepo } from "@/lib/db";
 import type { DiscontinuedCode, Equivalence, PresentationRule, Product, Supplier } from "@/types/database";
@@ -12,6 +13,7 @@ export default function EquivalencesPage() {
   const [discontinued, setDiscontinued] = useState<DiscontinuedCode[]>([]);
   const [search, setSearch] = useState("");
   const [editor, setEditor] = useState<PresentationRule | "new" | null>(null);
+  const [editingRelation, setEditingRelation] = useState<LearnedRow | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -33,7 +35,7 @@ export default function EquivalencesPage() {
     } catch (e) { setError(e instanceof Error ? e.message : "No se pudo cargar el diccionario."); }
     finally { setLoading(false); }
   }
-  useEffect(() => { load(); }, [supplierId]);
+  useEffect(() => { load(); window.addEventListener("pricecore:restored", load); return () => window.removeEventListener("pricecore:restored", load); }, [supplierId]);
   const filteredRules = useMemo(() => rules.filter(r => `${r.own_label} ${r.supplier_pattern ?? ""} ${r.own_pattern ?? ""}`.toLowerCase().includes(search.toLowerCase())), [rules, search]);
   const filteredRows = useMemo(() => rows.filter(r => `${r.supplier_code} ${r.product?.code ?? ""} ${r.product?.description ?? ""}`.toLowerCase().includes(search.toLowerCase())), [rows, search]);
   async function mutate(action: () => Promise<unknown>) {
@@ -51,7 +53,7 @@ export default function EquivalencesPage() {
       <button onClick={() => setTab("rules")} className={`rounded px-3 py-2 text-sm ${tab === "rules" ? "bg-white font-semibold" : "text-steel-600"}`}>Reglas generales de presentación</button>
     </div>
     <p className="mb-4 rounded bg-info-50 p-3 text-sm text-info-500">
-      {tab === "equiv" ? "Estas relaciones se enseñan desde Revisar detalle en una comparación. Las cantidades específicas tienen prioridad sobre las reglas generales. Para cambiar cantidades, abrí el detalle y recalculá." : "Estas reglas convierten precios cuando coinciden ambos patrones de presentación. El factor multiplica el precio del proveedor. Dos reglas con factores distintos para la misma presentación bloquean ese precio."}
+      {tab === "equiv" ? "Un código del proveedor puede tener varias presentaciones propias, incluso con el mismo código. Podés editar cantidades o borrar una relación. Los cambios del diccionario se usan en próximas listas; las comparaciones anteriores conservan su cálculo. Para recalcular una actual, usá Enseñar presentación." : "Estas reglas convierten precios cuando coinciden ambos patrones de presentación. El factor multiplica el precio del proveedor. Dos reglas con factores distintos para la misma presentación bloquean ese precio."}
     </p>
     <div className="mb-4 flex flex-wrap gap-2">
       <select aria-label="Proveedor del diccionario" value={supplierId} onChange={e => setSupplierId(e.target.value)} className="field-control"><option value="">Seleccionar proveedor</option>{suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
@@ -59,8 +61,8 @@ export default function EquivalencesPage() {
     </div>
     {error && <p role="alert" className="mb-3 rounded bg-danger-50 p-3 text-sm text-danger-500">{error}</p>}
     {loading ? <p>Cargando diccionario…</p> : tab === "equiv" ? <div className="panel overflow-x-auto">
-      <table className="w-full text-sm"><thead className="bg-steel-50 text-left text-xs text-steel-600"><tr><th className="p-3">Código proveedor</th><th className="p-3">Artículo propio</th><th className="p-3">Conversión aprendida</th><th className="p-3">Acciones</th></tr></thead>
-        <tbody className="divide-y">{filteredRows.map(row => <tr key={row.id}><td className="mono-num p-3">{row.supplier_code}</td><td className="p-3">{row.product ? `${row.product.code} — ${row.product.description}` : "Artículo no disponible"}</td><td className="p-3">{row.supplier_quantity && row.own_quantity ? `x${row.supplier_quantity} → x${row.own_quantity}: dividir por ${Number((row.supplier_quantity / row.own_quantity).toPrecision(8))}` : "Misma presentación, sin conversión"}</td><td className="p-3"><button onClick={() => { if (confirm("¿Olvidar esta relación para próximas listas? Los resultados anteriores se conservan.")) mutate(() => equivalencesRepo.remove(row.id)); }} className="text-danger-500">Olvidar relación</button></td></tr>)}</tbody>
+      <table className="w-full text-sm"><thead className="bg-steel-50 text-left text-xs text-steel-600"><tr><th className="p-3">Código proveedor</th><th className="p-3">Artículo propio</th><th className="p-3">Conversión aprendida</th><th className="p-3">Confirmada / actualizada</th><th className="p-3">Acciones</th></tr></thead>
+        <tbody className="divide-y">{filteredRows.map(row => <tr key={row.id}><td className="mono-num p-3">{row.supplier_code}</td><td className="p-3">{row.product ? `${row.product.code} — ${row.product.description}` : "Artículo no disponible"}</td><td className="p-3">{row.supplier_quantity && row.own_quantity ? `x${row.supplier_quantity} → x${row.own_quantity}: dividir por ${Number((row.supplier_quantity / row.own_quantity).toPrecision(8))}` : "Misma presentación, sin conversión"}</td><td className="p-3 text-xs text-steel-600">{row.updated_at ? new Date(row.updated_at).toLocaleString("es-AR") : "Sin fecha"}</td><td className="p-3"><div className="flex gap-3"><button onClick={() => setEditingRelation(row)} className="text-teal-600">Editar cantidades</button><button onClick={() => { if (confirm("¿Olvidar esta relación para próximas listas? Los resultados anteriores se conservan.")) mutate(() => forgetLearnedRelation(row.id)); }} className="text-danger-500">Olvidar relación</button></div></td></tr>)}</tbody>
       </table>{!filteredRows.length && <p className="p-6 text-center text-sm text-steel-600">No hay relaciones que coincidan con la búsqueda.</p>}
     </div> : <div className="panel overflow-x-auto">
       <table className="w-full text-sm"><thead className="bg-steel-50 text-left text-xs text-steel-600"><tr><th className="p-3">Proveedor presenta</th><th className="p-3">Yo presento</th><th className="p-3">Multiplicar precio por</th><th className="p-3">Estado</th><th className="p-3">Acciones</th></tr></thead>
@@ -68,6 +70,7 @@ export default function EquivalencesPage() {
       </table>{!filteredRules.length && <p className="p-6 text-center text-sm text-steel-600">No hay reglas que coincidan con la búsqueda.</p>}
     </div>}
     {!!discontinued.length && <section className="panel mt-5 p-4"><h2 className="font-semibold">Códigos discontinuados</h2><p className="mb-3 text-xs text-steel-600">No se buscan en nuevas listas. Podés volver a habilitarlos.</p>{discontinued.map(row => <div key={row.id} className="flex items-center justify-between py-2 text-sm"><span className="mono-num">{row.supplier_code}</span><button onClick={() => mutate(() => discontinuedCodesRepo.unmark(supplierId, row.supplier_code))} className="text-teal-600">Volver a buscar</button></div>)}</section>}
+    {editingRelation && <LearnedRelationEditor key={editingRelation.id} row={editingRelation} onClose={() => setEditingRelation(null)} onSaved={() => { setEditingRelation(null); load(); }} />}
     {editor && <RuleEditor key={editor === "new" ? "new" : editor.id} supplierId={supplierId} rule={editor === "new" ? null : editor} onClose={() => setEditor(null)} onSaved={() => { setEditor(null); load(); }} />}
   </div>;
 }
@@ -93,4 +96,15 @@ function RuleEditor({ supplierId, rule, onClose, onSaved }: { supplierId: string
     <p className="mt-3 text-xs text-steel-600">Las modificaciones se usan en próximas comparaciones. Las relaciones específicas por artículo conservan su prioridad.</p>
     {error && <p role="alert" className="mt-3 text-sm text-danger-500">{error}</p>}<div className="mt-5 flex justify-end gap-2"><button disabled={saving} onClick={onClose} className="rounded px-3 py-2 text-sm">Cancelar</button><button disabled={saving} onClick={save} className="rounded bg-teal-500 px-4 py-2 text-sm font-semibold text-white">{saving ? "Guardando…" : "Guardar regla"}</button></div>
   </div></div>;
+}
+
+function LearnedRelationEditor({ row, onClose, onSaved }: { row: LearnedRow; onClose: () => void; onSaved: () => void }) {
+  const [source, setSource] = useState(String(row.supplier_quantity ?? 1)), [own, setOwn] = useState(String(row.own_quantity ?? 1));
+  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  async function save() {
+    if (busy) return; setBusy(true); setError("");
+    try { await editLearnedRelation(row.id, Number(source.replace(",", ".")), Number(own.replace(",", "."))); onSaved(); }
+    catch (e) { setError(e instanceof Error ? e.message : "No se pudo guardar."); } finally { setBusy(false); }
+  }
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/25 p-4"><div role="dialog" aria-modal="true" aria-label="Editar relación aprendida" className="panel w-full max-w-lg p-5"><h2 className="text-lg font-semibold">Editar relación aprendida</h2><p className="mt-2 text-sm">{row.supplier_code} → {row.product?.code} · {row.product?.description} ({row.product?.unit})</p><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm">Cantidad proveedor<input aria-label="Cantidad proveedor aprendida" disabled={busy} value={source} onChange={e => setSource(e.target.value)} inputMode="decimal" className="field-control mt-1 w-full" /></label><label className="text-sm">Cantidad propia<input aria-label="Cantidad propia aprendida" disabled={busy} value={own} onChange={e => setOwn(e.target.value)} inputMode="decimal" className="field-control mt-1 w-full" /></label></div><p className="mt-3 text-xs text-steel-600">Se aplica en próximas listas de este proveedor. Podés deshacer este cambio desde la barra de última acción.</p>{error && <p role="alert" className="mt-3 text-sm text-danger-500">{error}</p>}<div className="mt-4 flex justify-end gap-2"><button disabled={busy} onClick={onClose} className="field-control">Cancelar</button><button disabled={busy} onClick={save} className="rounded bg-teal-500 px-4 py-2 text-sm font-semibold text-white">{busy ? "Guardando…" : "Guardar cantidades"}</button></div></div></div>;
 }

@@ -1,3 +1,4 @@
+import { beginUndoAction } from "./undoHistory";
 import { getDB } from "./db";
 import { buildPrefixCodeIndex, baseCode, sameCodeWithoutPrefix, prefixPresentationConflict } from "./codePrefixes";
 import { normalizeCodeForMatch } from "./normalize";
@@ -10,7 +11,7 @@ import type { PriceListItem, Product } from "@/types/database";
  * Una sola transacción, sin reimportar ni reemplazar decisiones anteriores. */
 export async function applyPrefixMatches(sessionId: string): Promise<{ linked: number; review: number; linkedProductIds: string[] }> {
   const db = await getDB();
-  const tx = db.transaction(["suppliers", "products", "priceListItems", "priceChanges", "equivalences", "discontinuedCodes", "comparisonSessions"], "readwrite");
+  const tx = db.transaction(["suppliers", "products", "priceListItems", "priceChanges", "equivalences", "discontinuedCodes", "comparisonSessions", "undoHistory"], "readwrite");
   try {
     const session = await tx.objectStore("comparisonSessions").get(sessionId);
     if (!session) throw new Error("La comparación ya no está disponible.");
@@ -47,6 +48,7 @@ export async function applyPrefixMatches(sessionId: string): Promise<{ linked: n
       if (matched.has(product.id) || eqs.some(e => e.decision === "confirmed") || prefixPresentationConflict(product.description, product.unit, item.supplier_description, item.supplier_unit)) { review++; continue; }
       plans.push({ item, product });
     }
+    const finishUndo = await beginUndoAction(tx, "Aplicar códigos con/sin ET-", { sessionId: session.id, supplierId: session.supplier_id, itemIds: plans.map(p => p.item.id) });
     const counts = new Map<string, number>();
     for (const { product } of plans) counts.set(product.id, (counts.get(product.id) ?? 0) + 1);
     const updatedItems = new Map(items.map(i => [i.id, i]));
@@ -56,7 +58,7 @@ export async function applyPrefixMatches(sessionId: string): Promise<{ linked: n
     for (const { item, product } of plans) {
       // Dos filas del proveedor para el mismo código base requieren elección humana.
       if (counts.get(product.id) !== 1) { review++; continue; }
-      const updated: PriceListItem = { ...item, matched_product_id: product.id, match_level: "code_prefix", match_score: 95, match_state: "safe" };
+      const updated: PriceListItem = { ...item, review_reason: "", matched_product_id: product.id, match_level: "code_prefix", match_score: 95, match_state: "safe" };
       await tx.objectStore("priceListItems").put(updated);
       updatedItems.set(item.id, updated);
       if (!priceIssue(updated, product)) {
@@ -69,6 +71,7 @@ export async function applyPrefixMatches(sessionId: string): Promise<{ linked: n
       linked++; linkedProductIds.push(product.id);
     }
     await tx.objectStore("comparisonSessions").put({ ...session, ...comparisonStats([...updatedItems.values()], changes, catalog) });
+    await finishUndo();
     await tx.done;
     return { linked, review, linkedProductIds };
   } catch (error) {

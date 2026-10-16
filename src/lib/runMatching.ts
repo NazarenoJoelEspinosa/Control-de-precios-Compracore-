@@ -1,5 +1,5 @@
 import { buildPrefixCodeIndex } from "./codePrefixes";
-import { presentationReviewReason } from "./presentationReview";
+import { presentationReviewReason, supplierPresentationLimits } from "./presentationReview";
 import { priceIssue } from "./pricePolicy";
 import { comparisonStats } from "./comparisonStats";
 import { learnedPresentations, presentationChange, ruleConversion } from "./presentationConversions";
@@ -51,11 +51,16 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
 
   const byExactCode = new Map<string, ProductForMatch>();
   const byNormalizedCode = new Map<string, ProductForMatch>();
+  const exactCodeCandidates = new Map<string, ProductForMatch[]>();
+  const normalizedCodeCandidates = new Map<string, ProductForMatch[]>();
   const productsById = new Map<string, ProductForMatch>();
   for (const p of activeProducts) {
     byExactCode.set(normalizeText(p.code).toUpperCase(), p);
     byNormalizedCode.set(normalizeCodeForMatch(p.code), p);
     productsById.set(p.id, p);
+    for (const [index, key] of [[exactCodeCandidates, normalizeText(p.code).toUpperCase()], [normalizedCodeCandidates, normalizeCodeForMatch(p.code)]] as const) {
+      const group = index.get(key); if (group) group.push(p); else index.set(key, [p]);
+    }
   }
 
   // Tokenizar el catálogo es la parte cara del matching — se hace UNA vez
@@ -103,6 +108,7 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
   const deps: MatchDeps = {
     byExactCode,
     byNormalizedCode,
+    exactCodeCandidates, normalizedCodeCandidates,
     confirmedEquivalences,
     rejectedEquivalences,
     productsById,
@@ -130,6 +136,9 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
     const item: PriceListItem = { ...original, parsed_price: parsedPrice, parse_error: parseError,
       supplier_currency: original.supplier_currency === undefined ? supplier?.default_currency : original.supplier_currency,
       comparison_error: null, matched_presentations: undefined,
+      review_reason: result.presentationReason || (result.matchState === "not_found" ? "Sin coincidencia por código ni descripción suficiente." : ""),
+      candidate_product_ids: result.candidates.map(c => c.product.id),
+      presentation_limits: supplierPresentationLimits(supplier),
       matched_product_id: discontinued ? null : result.matchedProductId,
       match_level: discontinued ? "none" : result.matchLevel,
       match_score: discontinued ? null : result.matchScore,

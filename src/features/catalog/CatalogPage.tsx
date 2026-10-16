@@ -127,8 +127,7 @@ function SupplierCatalogFolder({ supplier, onBack }: { supplier: Supplier; onBac
           <p className="eyebrow">Carpeta de {supplier.name}</p>
           <h1 className="font-display text-2xl font-semibold text-ink">Catálogo de {supplier.name}</h1>
           <p className="mt-1 text-sm text-steel-600">
-            Sólo productos de este proveedor. Los códigos acá son únicos dentro de esta carpeta — no chocan con los
-            de otros proveedores.
+            Sólo productos de este proveedor. Un código puede tener varias presentaciones (x100, x10 o xU); se conservan como artículos separados.
           </p>
         </div>
         <div className="flex gap-2">
@@ -465,12 +464,11 @@ function ImportCatalogForm({ supplierId, onDone }: { supplierId: string; onDone:
           {duplicates && duplicates.length > 0 && (
             <div className="rounded border border-amber-400 bg-amber-50 p-3 text-sm text-amber-600">
               <p className="font-medium">
-                El archivo tiene {duplicates.length} código{duplicates.length !== 1 ? "s" : ""} repetido
-                {duplicates.length !== 1 ? "s" : ""} — se importó igual, quedándose con la última fila de cada uno:
+                El archivo tiene {duplicates.length} combinación(es) de código y presentación repetidas. Se conservó la última fila de cada combinación:
               </p>
               <ul className="mt-1 list-inside list-disc">
-                {duplicates.slice(0, 20).map((d) => (
-                  <li key={d.code} className="mono-num">
+                {duplicates.slice(0, 20).map((d, index) => (
+                  <li key={`${d.code}-${index}`} className="mono-num">
                     {d.code} — aparece {d.count} veces
                   </li>
                 ))}
