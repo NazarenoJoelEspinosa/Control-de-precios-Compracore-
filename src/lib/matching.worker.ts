@@ -1,15 +1,7 @@
-import { matchItem, type IncomingItem, type MatchDeps } from "./matching";
-import { DEFAULT_THRESHOLDS } from "./matching";
-
-type WorkerRequest = {
-  supplierId: string;
-  items: IncomingItem[];
-  deps: MatchDeps;
-  thresholds: typeof DEFAULT_THRESHOLDS;
-};
-
-self.onmessage = (event: MessageEvent<WorkerRequest>) => {
-  const { supplierId, items, deps, thresholds } = event.data;
-  const results = items.map((item) => matchItem(supplierId, item, deps, thresholds));
-  self.postMessage(results);
+import { selectCatalogCandidates, matchSelectedItems } from "./catalogMatching";
+self.onmessage = event => {
+  const { supplierId, items, deps, products, equivalences, discontinued, options } = event.data;
+  const selection = selectCatalogCandidates(products, items, equivalences, discontinued, options);
+  if (event.data.mode === "candidates") { self.postMessage({ candidatesByProduct: selection.candidatesByProduct }); return; }
+  self.postMessage({ matches: matchSelectedItems(supplierId, items, deps, selection, options), candidatesByProduct: selection.candidatesByProduct });
 };

@@ -1,6 +1,5 @@
 import { closeComparison } from "@/lib/comparisonLifecycle";
 import { updateComparisonLimits } from "@/lib/updateComparisonLimits";
-import { buildGapReasons, type GapReason } from "@/lib/gapReasons";
 import { presentationReviewReason } from "@/lib/presentationReview";
 import { matchesResultFilters, resultStatus, type ResultView, type ReviewKind, type ExtraFilter } from "@/lib/resultFilters";
 import PresentationReview from "./PresentationReview";
@@ -8,13 +7,11 @@ import { priceIssue } from "@/lib/pricePolicy";
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import clsx from "clsx";
-import { comparisonSessionsRepo, priceChangesRepo, priceListItemsRepo, productsRepo, suppliersRepo, equivalencesRepo, discontinuedCodesRepo } from "@/lib/db";
+import { comparisonSessionsRepo, priceChangesRepo, priceListItemsRepo, productsRepo } from "@/lib/db";
 import { MatchStateBadge, PriceDeltaBadge, ChangeStatusBadge } from "@/components/ui/StatusBadges";
 import PresentationConversionEditor from "@/components/PresentationConversionEditor";
 import { convertPresentationPrice } from "@/lib/presentationConversions";
-import MatchResolutionPanel from "@/components/MatchResolutionPanel";
 import { formatPrice } from "@/lib/normalize";
-import CatalogGapReview from "./CatalogGapReview";
 import { decidePriceChange, decidePriceChanges } from "@/lib/reviewActions";
 import { exportAllResults, exportApprovedOnly, type ExportRow } from "@/lib/exportResults";
 import type { ComparisonSession, PriceListItem, Product } from "@/types/database";
@@ -59,10 +56,7 @@ export default function ResultsPage() {
   const isClosed = session?.status === "closed";
   const [rows, setRows] = useState<ExportRow[]>([]);
   const [catalogGaps, setCatalogGaps] = useState<Product[]>([]);
-  const [ignoreEtPrefix, setIgnoreEtPrefix] = useState(false);
-  const [gapReasons, setGapReasons] = useState<Record<string, GapReason>>({});
   const [catalogTotal, setCatalogTotal] = useState(0);
-  const [showCatalogGaps, setShowCatalogGaps] = useState(false);
   const [view, setView] = useState<ResultView>("review");
   const [reviewKind, setReviewKind] = useState<ReviewKind>("all");
   const [filter, setFilter] = useState<ExtraFilter>("all");
@@ -98,8 +92,6 @@ export default function ResultsPage() {
       return;
     }
 
-    const supplier = await suppliersRepo.get(sessionData.supplier_id);
-    setIgnoreEtPrefix(supplier?.ignore_et_prefix === true);
     const items = await priceListItemsRepo.listByPriceList(sessionData.price_list_id);
     const changes = await priceChangesRepo.listBySession(sessionId);
     const productIds = [...new Set(items.flatMap((i) => i.matched_presentations?.map(c => c.product_id) ?? [i.matched_product_id]).filter(Boolean))] as string[];
@@ -120,23 +112,17 @@ export default function ResultsPage() {
       setView((["review", "pending", "approved", "unchanged"] as ResultView[]).find(v => merged.some(row => matchesResultFilters(row, v, "all", "all"))) ?? "all");
     }
 
-    // Sentido inverso al de "no encontrados": de TU catálogo para este
-    // proveedor, cuáles no aparecieron en absoluto en esta lista. Se deriva
-    // en vivo de lo ya cargado — cualquier producto con al menos un ítem que
-    // le haya quedado asociado (sea cual sea su match_state) cuenta como
-    // "sí apareció".
+    // La tarea de identidad se calcula desde cada artículo propio pendiente.
+    // Una sugerencia aún no confirmada no cuenta como artículo identificado.
     const catalogProducts = (sessionData.status === "closed" && sessionData.catalog_snapshot ? sessionData.catalog_snapshot : await productsRepo.listBySupplier(sessionData.supplier_id)).filter((p) => p.active);
-    const matchedProductIds = new Set(items.flatMap((i) => i.matched_presentations?.map(c => c.product_id) ?? [i.matched_product_id]).filter(Boolean) as string[]);
+    const matchedProductIds = new Set(items.filter(i => i.match_state === "safe").flatMap((i) => i.matched_presentations?.map(c => c.product_id) ?? [i.matched_product_id]).filter(Boolean) as string[]);
     const gaps = catalogProducts.filter((p) => !matchedProductIds.has(p.id));
     setCatalogGaps(gaps);
-    const [equivalences, discontinued] = await Promise.all([equivalencesRepo.listForSupplier(sessionData.supplier_id), discontinuedCodesRepo.listForSupplier(sessionData.supplier_id)]);
-    setGapReasons(buildGapReasons(gaps, items, supplier?.ignore_et_prefix === true, equivalences, discontinued));
     setCatalogTotal(catalogProducts.length);
 
     setLoading(false);
   }
 
-  const notFoundItems = useMemo(() => rows.filter((r) => r.item.match_state === "not_found").map((r) => r.item), [rows]);
 
   const filtered = useMemo(() => {
     let result = rows.filter((row) => {
@@ -266,8 +252,8 @@ export default function ResultsPage() {
 
       <section aria-label="Avance de identificación" className="panel mb-4 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div><h2 className="text-sm font-semibold">Tu catálogo: <span className="mono-num">{identifiedOwnCount} de {catalogTotal}</span> artículos identificados</h2><p className="mt-1 text-xs text-steel-600">{Math.max(0, catalogTotal - identifiedOwnCount - catalogGaps.length)} con vínculo por confirmar · {catalogGaps.length} sin vínculo. Aprobar precios es otro paso.</p></div>
-          {catalogGaps.length > 0 && <button disabled={isClosed} onClick={() => { setPresentationReview(null); setShowCatalogGaps(true); }} className="rounded border border-violet-200 px-3 py-2 text-xs font-semibold text-violet-500 disabled:opacity-50">Buscar {catalogGaps.length} artículos sin vínculo</button>}
+          <div><h2 className="text-sm font-semibold">Tu catálogo: <span className="mono-num">{identifiedOwnCount} de {catalogTotal}</span> artículos identificados</h2><p className="mt-1 text-xs text-steel-600">{Math.max(0, catalogTotal - identifiedOwnCount)} artículos propios pendientes de identificar en la lista del proveedor. Aprobar precios es otro paso.</p></div>
+          {catalogGaps.length > 0 && <button disabled={isClosed} onClick={() => navigate(`/comparisons/${session.id}/review`)} className="rounded border border-violet-200 px-3 py-2 text-xs font-semibold text-violet-500 disabled:opacity-50">Identificar mis {catalogGaps.length} artículos pendientes</button>}
         </div>
         <progress aria-label="Artículos propios identificados" max={Math.max(1, catalogTotal)} value={identifiedOwnCount} className="mt-3 h-2 w-full accent-teal-500" />
         <details className="mt-2 text-xs text-steel-600"><summary className="cursor-pointer">¿Por qué identificados y aprobados son distintos?</summary><p className="mt-2">Los identificados cuentan artículos propios únicos. Abajo se cuentan resultados de precios: algunos necesitan revisar cantidades, otros esperan aprobación y otros no cambiaron. Un artículo puede tener varias filas o presentaciones en la lista del proveedor. Los artículos sin vínculo se revisan aparte.</p></details>
@@ -275,18 +261,6 @@ export default function ResultsPage() {
 
       {!isClosed && presentationReview ? (
         <PresentationReview key={`${session.id}:${restoreEpoch}`} session={session} rows={rows} initialItemId={presentationReview.initialItemId} onRefresh={() => load(true)} onClose={() => setPresentationReview(null)} />
-      ) : !isClosed && showCatalogGaps ? (
-        <CatalogGapReview
-          key={`${session.id}:${restoreEpoch}`}
-          session={session}
-          products={catalogGaps}
-          reasons={gapReasons}
-          onTeachPresentations={itemId => setPresentationReview({ initialItemId: itemId })}
-          ignoreEtPrefix={ignoreEtPrefix}
-          items={notFoundItems}
-          onRefresh={() => load(true)}
-          onClose={() => setShowCatalogGaps(false)}
-        />
       ) : (
         <>
       <div className="panel mb-4 space-y-3 p-3">
@@ -366,7 +340,7 @@ export default function ResultsPage() {
                 <td className="px-3 py-2 text-right">
                   <div className="flex flex-wrap justify-end gap-1">
                     {!isClosed && resultStatus(row) === "pending" && <button disabled={deciding} onClick={() => decide(row, "approved")} className="rounded bg-success-500 px-2 py-1 text-xs font-semibold text-white">Aprobar precio</button>}
-                    {!isClosed && resultStatus(row) === "presentations" ? <button onClick={() => setPresentationReview({ initialItemId: row.item.id })} className="rounded bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-600">Revisar cantidades</button> : <button onClick={() => setSelected(row)} className="rounded px-2 py-1 text-xs font-medium text-teal-600 hover:bg-steel-50">{!isClosed && resultStatus(row) === "identification" ? "Identificar" : "Ver detalle"}</button>}
+                    {!isClosed && resultStatus(row) === "presentations" ? <button onClick={() => setPresentationReview({ initialItemId: row.item.id })} className="rounded bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-600">Revisar cantidades</button> : <button onClick={() => resultStatus(row) === "identification" ? navigate(`/comparisons/${session.id}/review${row.product ? `?productId=${row.product.id}` : ""}`) : setSelected(row)} className="rounded px-2 py-1 text-xs font-medium text-teal-600 hover:bg-steel-50">{!isClosed && resultStatus(row) === "identification" ? "Identificar" : "Ver detalle"}</button>}
                   </div>
 
                 </td>
@@ -498,7 +472,7 @@ function ProductDrawer({
         {session.status === "open" && !needsResolution && <PresentationConversionEditor session={session} item={row.item} onResolved={onResolved} />}
 
         {session.status === "open" && needsResolution && (
-          <MatchResolutionPanel session={session} item={row.item} suggestedProduct={row.product} onResolved={onResolved} />
+          <Link className="inline-block rounded bg-teal-500 px-3 py-2 text-sm font-semibold text-white" to={`/comparisons/${session.id}/review${row.product ? `?productId=${row.product.id}` : ""}`}>Buscar el equivalente de mi artículo en la lista del proveedor</Link>
         )}
       </div>
     </div>

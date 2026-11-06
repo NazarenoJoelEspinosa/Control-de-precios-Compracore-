@@ -81,7 +81,7 @@ describe("Correcciones de claridad y precios", () => {
     await runMatchingForPriceList(f.list.id, f.s.id);
     expect((await priceListItemsRepo.listByPriceList(f.list.id))[0].match_level).toBe("code_family");
   });
-  it("el máximo de candidatos configurado limita realmente la búsqueda por descripción", async () => {
+  it("el cupo de candidatos se aplica al proveedor y no deja de consultar el segundo artículo propio", async () => {
     const f = await setup(); const db = await getDB();
     await db.delete("products", f.product.id);
     await db.put("products", { ...f.product, id: "b" });
@@ -89,7 +89,7 @@ describe("Correcciones de claridad y precios", () => {
     await priceListItemsRepo.update({ ...f.item, supplier_code: "ZZ", supplier_description: "Tornillo x100", supplier_unit: "x100" });
     await settingsRepo.save({ max_candidates: 1, enable_code_family: false, enable_description: true });
     await runMatchingForPriceList(f.list.id, f.s.id);
-    expect((await priceListItemsRepo.listByPriceList(f.list.id))[0].matched_product_id).not.toBe("b");
+    expect((await priceListItemsRepo.listByPriceList(f.list.id))[0].matched_product_id).toBe("b");
     await settingsRepo.save({ max_candidates: 2 });
     await runMatchingForPriceList(f.list.id, f.s.id);
     expect((await priceListItemsRepo.listByPriceList(f.list.id))[0].matched_product_id).toBe("b");
@@ -131,3 +131,4 @@ describe("Correcciones de claridad y precios", () => {
     changes = await priceChangesRepo.listBySession(id); expect(changes[0].status).toBe("rejected");
   });
 });
+
