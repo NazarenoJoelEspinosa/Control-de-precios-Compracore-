@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { getDB, productsRepo, priceListsRepo, priceListItemsRepo, comparisonSessionsRepo, priceChangesRepo, settingsRepo, presentationRulesRepo, suppliersRepo } from "../db";
 import { parseDecimal } from "../normalize";
 import { prepareCatalogImport } from "../catalogImport";
-import { parseCurrency } from "../pricePolicy";
+import { parseCurrency, parsePriceCurrency } from "../pricePolicy";
 import { confirmMatch, decidePriceChanges } from "../reviewActions";
 import { savePresentations } from "../savePresentations";
 import { runMatchingForPriceList } from "../runMatching";
@@ -18,6 +18,39 @@ async function setup(code = "A", currency: Currency = "ARS") {
   return { s, product, list, item };
 }
 describe("Correcciones de claridad y precios", () => {
+  it("admite el decimal del proveedor sin cambiar los miles argentinos", () => {
+    expect(parseDecimal("5447.585")).toBe(5447.59);
+    expect(parseDecimal("-5447.585")).toBe(-5447.58);
+    expect(parseDecimal("1.500")).toBe(1500);
+    expect(parseDecimal("54.123")).toBe(54123);
+    expect(parseDecimal(54.123)).toBe(54.12);
+    for (const label of ["USD", "US$", "U$S", "U$D"]) {
+      expect(parseDecimal(`${label} 26,71`)).toBe(26.71);
+      expect(parseCurrency(label, "ARS")).toEqual({ currency: "USD", error: null });
+      expect(parsePriceCurrency(`${label} 26,71`, "", "ARS")).toEqual({ currency: "USD", error: null });
+    }
+  });
+  it("importa dólares del precio o de la columna y bloquea monedas contradictorias", () => {
+    const rows = [
+      { code: "8500", description: "KIT PROTECTOR", price: "USD 26,71" },
+      { code: "5300/20", description: "FILTRO", price: "7,45", currency: "U$D" },
+    ];
+    const imported = prepareCatalogImport(rows, { code: "code", description: "description", price: "price", currency: "currency" }, "ARS");
+    expect(imported.errors).toEqual([]);
+    expect(imported.products.map(p => [p.code, p.current_price, p.currency])).toEqual([["8500", 26.71, "USD"], ["5300/20", 7.45, "USD"]]);
+    expect(parsePriceCurrency("26,71 USD", undefined, "ARS").currency).toBe("USD");
+    expect(parsePriceCurrency("26,71", undefined, "ARS").currency).toBe("ARS");
+    expect(parsePriceCurrency("USD 26,71", "ARS", "ARS").error).toBeTruthy();
+    expect(parsePriceCurrency("26,71", "EUR", "ARS").error).toBeTruthy();
+    expect(parsePriceCurrency("USD 26,71 ARS", "", "ARS").error).toBeTruthy();
+  });
+  it("respeta el número tipado del Excel durante la comparación", async () => {
+    const f = await setup();
+    await (await getDB()).put("priceLists", { ...f.list, column_mapping: { price: "Precio" } });
+    await priceListItemsRepo.update({ ...f.item, raw_price: "54.123", raw_data: { Precio: 54.123 } });
+    await runMatchingForPriceList(f.list.id, f.s.id);
+    expect((await priceListItemsRepo.listByPriceList(f.list.id))[0].parsed_price).toBe(54.12);
+  });
   it("no rescata números de textos, admite agrupaciones completas y coma decimal precisa", () => {
     expect(parseDecimal("18,455")).toBe(18.46);
     expect(parseDecimal(".50")).toBe(0.5);

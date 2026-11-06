@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { comparisonSessionsRepo, productsRepo, suppliersRepo } from "@/lib/db";
+import { comparisonSessionsRepo, productsRepo, suppliersRepo, supplierColumnConfigRepo } from "@/lib/db";
+import ImportMoneySettings from "@/components/ImportMoneySettings";
+import { emptyMoneyOptions } from "@/lib/importMoney";
 import { prepareCatalogImport } from "@/lib/catalogImport";
 import { catalogRevision, planCatalog, samePresentation, syncCatalog, type CatalogLinks, type CatalogMode } from "@/lib/catalogSync";
 import { productVariantKey } from "@/lib/productVariants";
@@ -16,17 +18,19 @@ export default function ImportCatalogForm({ supplierId, onDone }: { supplierId: 
   const [mode, setMode] = useState<CatalogMode | "">("");
   const [links, setLinks] = useState<CatalogLinks>({});
   const [currency, setCurrency] = useState<"ARS" | "USD">("ARS");
+  const [moneyOptions, setMoneyOptions] = useState(emptyMoneyOptions);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [openSessions, setOpenSessions] = useState<string[]>([]);
   useEffect(() => {
+    supplierColumnConfigRepo.get(supplierId).then(config => setMoneyOptions({ ...emptyMoneyOptions(), numberFormat: config?.catalog_number_format ?? "auto" })).catch(e => setError(e.message));
     Promise.all([suppliersRepo.get(supplierId), comparisonSessionsRepo.list()]).then(([s, sessions]) => {
       setCurrency(s?.default_currency ?? "ARS");
       setOpenSessions(sessions.filter(s => s.supplier_id === supplierId && s.status === "open").map(s => s.id));
     }).catch(e => setError(e.message));
   }, [supplierId]);
 
-  const prepared = useMemo(() => prepareCatalogImport(parsed?.rows ?? [], mapping, currency), [parsed, mapping, currency]);
+  const prepared = useMemo(() => prepareCatalogImport(parsed?.rows ?? [], mapping, currency, moneyOptions), [parsed, mapping, currency, moneyOptions]);
   const preview = useMemo(() => {
     if (!mode || !prepared.products.length) return null;
     try { return { plan: planCatalog(existing, prepared.products, mode, links), error: "" }; }
@@ -36,6 +40,7 @@ export default function ImportCatalogForm({ supplierId, onDone }: { supplierId: 
   const possiblePrevious = existing.filter(p => !inputKeys.has(productVariantKey(p)));
 
   async function read(file: File) {
+    setMoneyOptions(options => ({ ...options, currencyChoices: {} }));
     setBusy(true); setError(""); setParsed(null); setRevision(null); setLinks({});
     try {
       const [data, products] = await Promise.all([parseSpreadsheetFile(file), productsRepo.listBySupplier(supplierId)]);
@@ -48,7 +53,7 @@ export default function ImportCatalogForm({ supplierId, onDone }: { supplierId: 
     const plan = preview.plan;
     if (!window.confirm(`¿Guardar ${prepared.products.length} artículos? ${plan.added} nuevos, ${plan.updated} actualizados y ${plan.deactivate.length} ausentes que dejarán de participar. Se conservan las equivalencias y las cantidades de los artículos reconocidos o vinculados.`)) return;
     setBusy(true); setError("");
-    try { await syncCatalog(supplierId, prepared.products, mode, links, revision); onDone(); }
+    try { await supplierColumnConfigRepo.saveCatalogNumberFormat(supplierId, moneyOptions.numberFormat); await syncCatalog(supplierId, prepared.products, mode, links, revision); onDone(); }
     catch (e) { setError(e instanceof Error ? e.message : "No se pudo renovar el catálogo."); }
     finally { setBusy(false); }
   }
@@ -64,6 +69,7 @@ export default function ImportCatalogForm({ supplierId, onDone }: { supplierId: 
       </fieldset>
       {parsed && <>
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3">{(["code", "description", "price", "unit", "currency"] as const).map(field => <label key={field} className="text-xs">{{ code: "Código *", description: "Descripción *", price: "Precio *", unit: "Unidad", currency: "Moneda" }[field]}<select className="field-control mt-1 w-full" value={mapping[field] ?? ""} onChange={e => { setMapping({ ...mapping, [field]: e.target.value || undefined }); setLinks({}); }}><option value="">— Elegir columna —</option>{parsed.headers.map(h => <option key={h} value={h}>{h}</option>)}</select></label>)}</div>
+        <ImportMoneySettings rows={parsed.rows} mapping={mapping} value={moneyOptions} onChange={setMoneyOptions}/>
         <p className="text-sm">{prepared.products.length} artículos válidos · {prepared.skipped} filas sin código omitidas · {prepared.errors.length} errores</p>
         {prepared.errors.length > 0 && <div role="alert" className="max-h-40 overflow-auto text-xs text-danger-500">{prepared.errors.map((e, i) => <p key={i}>{e}</p>)}</div>}
         {preview?.error && <p role="alert" className="text-sm text-danger-500">{preview.error}</p>}

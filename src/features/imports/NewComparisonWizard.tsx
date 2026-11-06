@@ -4,7 +4,9 @@ import { Link, useNavigate } from "react-router-dom";
 import clsx from "clsx";
 import { priceListItemsRepo, priceListsRepo, productsRepo, supplierColumnConfigRepo, suppliersRepo, settingsRepo } from "@/lib/db";
 import { runMatchingForPriceList } from "@/lib/runMatching";
-import { parseCurrency } from "@/lib/pricePolicy";
+import ImportMoneySettings from "@/components/ImportMoneySettings";
+import { emptyMoneyOptions, importCurrency, inspectImportMoney } from "@/lib/importMoney";
+import type { ImportMoneyOptions } from "@/lib/importMoney";
 import { parseSpreadsheetFile, type ParsedFile } from "@/lib/fileParsing";
 import { suggestColumnMapping, type ColumnMapping } from "@/lib/columnMapping";
 import type { Supplier } from "@/types/database";
@@ -24,6 +26,7 @@ export default function NewComparisonWizard() {
 
   const [mapping, setMapping] = useState<ColumnMapping>({});
   const [mappingRemembered, setMappingRemembered] = useState(false);
+  const [moneyOptions, setMoneyOptions] = useState(emptyMoneyOptions);
   const [processing, setProcessing] = useState(false);
   const [processError, setProcessError] = useState<string | null>(null);
 
@@ -52,6 +55,7 @@ export default function NewComparisonWizard() {
     const suggested = suggestColumnMapping(parsed.headers);
     const appSettings = await settingsRepo.get();
     const saved = appSettings.remember_column_mapping === false ? undefined : await supplierColumnConfigRepo.get(supplierId);
+    setMoneyOptions({ ...emptyMoneyOptions(), numberFormat: saved?.price_number_format ?? "auto" });
     if (saved) {
       // Sólo usamos el mapeo guardado si las columnas que recuerda todavía
       // existen en este archivo — si el proveedor cambió el formato, mejor
@@ -83,7 +87,11 @@ export default function NewComparisonWizard() {
     setProcessing(true);
     setProcessError(null);
     try {
+      const inspection = inspectImportMoney(supplierParsed.rows, mapping, moneyOptions);
+      if (inspection.unresolved || inspection.needsFormat) throw new Error("Volvé a confirmar columnas y elegí la moneda y los separadores pendientes.");
+      const previousConfig = await supplierColumnConfigRepo.get(supplierId);
       await supplierColumnConfigRepo.save(supplierId, {
+        ...previousConfig,
         code_column: mapping.code ?? null,
         description_column: mapping.description ?? null,
         price_column: mapping.price ?? null,
@@ -91,6 +99,7 @@ export default function NewComparisonWizard() {
         brand_column: mapping.brand ?? null,
         ean_column: mapping.ean ?? null,
         currency_column: mapping.currency ?? null,
+        price_number_format: moneyOptions.numberFormat,
       });
 
       const priceList = await priceListsRepo.create({
@@ -98,18 +107,21 @@ export default function NewComparisonWizard() {
         file_name: supplierFile.name,
         row_count: supplierParsed.rows.length,
         status: "mapped",
-        column_mapping: mapping as Record<string, string>,
+        column_mapping: { ...mapping, number_format: moneyOptions.numberFormat } as Record<string, string>,
       });
 
       await priceListItemsRepo.bulkCreate(
-        supplierParsed.rows.map((row) => ({
+        supplierParsed.rows.filter(row => String(row[mapping.code ?? ""] ?? "").trim()).map((row) => {
+          const money = importCurrency(row[mapping.price ?? ""], row[mapping.currency ?? ""], suppliers.find(s => s.id === supplierId)?.default_currency ?? "ARS", moneyOptions);
+          if (money.error) throw new Error(money.error);
+          return ({
           price_list_id: priceList.id,
           supplier_code: String(row[mapping.code ?? ""] ?? "").trim(),
           supplier_description: String(row[mapping.description ?? ""] ?? "").trim(),
           supplier_unit: String(row[mapping.unit ?? ""] ?? "").trim(),
           supplier_brand: String(row[mapping.brand ?? ""] ?? "").trim(),
-          supplier_currency: parseCurrency(row[mapping.currency ?? ""], suppliers.find(s => s.id === supplierId)?.default_currency ?? "ARS").currency,
-          currency_error: parseCurrency(row[mapping.currency ?? ""], suppliers.find(s => s.id === supplierId)?.default_currency ?? "ARS").error,
+          supplier_currency: money.currency,
+          currency_error: money.error,
           raw_price: String(row[mapping.price ?? ""] ?? ""),
           parsed_price: null,
           parse_error: null,
@@ -118,7 +130,7 @@ export default function NewComparisonWizard() {
           match_score: null,
           match_state: "not_found" as const,
           raw_data: row,
-        }))
+        }); })
       );
 
       const sessionId = await runMatchingForPriceList(priceList.id, supplierId);
@@ -183,6 +195,9 @@ export default function NewComparisonWizard() {
 
         {step === 3 && supplierParsed && (
           <StepMapping
+            allRows={supplierParsed.rows}
+            moneyOptions={moneyOptions}
+            onMoneyChange={setMoneyOptions}
             headers={supplierParsed.headers}
             mapping={mapping}
             remembered={mappingRemembered}
@@ -317,6 +332,7 @@ const FIELD_LABELS: Record<keyof ColumnMapping, string> = {
 };
 
 function StepMapping({
+  allRows, moneyOptions, onMoneyChange,
   headers,
   mapping,
   remembered,
@@ -325,6 +341,9 @@ function StepMapping({
   onNext,
   previewRows,
 }: {
+  allRows: Record<string, unknown>[];
+  moneyOptions: ImportMoneyOptions;
+  onMoneyChange: (options: ImportMoneyOptions) => void;
   headers: string[];
   mapping: ColumnMapping;
   remembered: boolean;
@@ -333,7 +352,8 @@ function StepMapping({
   onNext: () => void;
   previewRows: Record<string, unknown>[];
 }) {
-  const requiredOk = mapping.code && mapping.description && mapping.price;
+  const moneyInspection = inspectImportMoney(allRows, mapping, moneyOptions);
+  const requiredOk = mapping.code && mapping.description && mapping.price && !moneyInspection.unresolved && !moneyInspection.needsFormat;
   return (
     <div>
       <h2 className="mb-1 font-display text-lg font-semibold text-ink">Paso 4 — Confirmar columnas</h2>
@@ -366,7 +386,8 @@ function StepMapping({
           </div>
         ))}
       </div>
-      {!requiredOk && (
+      <div className="mt-4"><ImportMoneySettings rows={allRows} mapping={mapping} value={moneyOptions} onChange={onMoneyChange}/></div>
+      {(!mapping.code || !mapping.description || !mapping.price) && (
         <p className="mt-3 text-xs text-amber-600">Código, descripción y precio son obligatorios para continuar.</p>
       )}
       <div className="mt-6 overflow-x-auto rounded border border-steel-100">

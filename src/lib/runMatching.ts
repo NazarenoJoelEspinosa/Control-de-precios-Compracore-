@@ -12,6 +12,7 @@ import {
   equivalencesRepo,
   priceChangesRepo,
   priceListItemsRepo,
+  priceListsRepo,
   productsRepo,
   settingsRepo,
   suppliersRepo,
@@ -38,6 +39,9 @@ async function matchInWorker(supplierId: string, items: PriceListItem[], deps: M
 
 export async function runMatchingForPriceList(priceListId: string, supplierId: string): Promise<string> {
   const items = await priceListItemsRepo.listByPriceList(priceListId);
+  const sourceList = await priceListsRepo.get(priceListId);
+  const priceColumn = sourceList?.column_mapping?.price;
+  const numberFormat = sourceList?.column_mapping?.number_format;
   // Sólo la carpeta de ESTE proveedor — nunca el catálogo entero. Esto es lo
   // que evita tanto los choques de código entre proveedores como el costo de
   // comparar cada ítem contra productos que ni siquiera son de este
@@ -130,7 +134,11 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
   for (let index = 0; index < items.length; index++) {
     const original = items[index];
     let parsedPrice: number | null = null, parseError: string | null = null;
-    try { parsedPrice = parseDecimal(original.raw_price); }
+    // XLSX conserva números tipados: 54.123 es un decimal, no el texto
+    // argentino "54.123" (54 mil). No perder ese dato al serializar raw_price.
+    const sourcePrice = priceColumn ? original.raw_data?.[priceColumn] : undefined;
+    try { parsedPrice = parseDecimal(typeof sourcePrice === "number" ? sourcePrice : original.raw_price,
+      numberFormat === "dot_decimal" || numberFormat === "comma_decimal" ? numberFormat : "auto"); }
     catch (error) { parseError = error instanceof Error ? error.message : "Precio inválido"; }
     const result = workerResults.matches[index];
     const discontinued = discontinuedCodes.has(original.supplier_code);
