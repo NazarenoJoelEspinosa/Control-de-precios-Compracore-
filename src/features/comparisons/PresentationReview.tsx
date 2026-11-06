@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import PresentationConversionEditor from "@/components/PresentationConversionEditor";
-import { presentationReviewReason } from "@/lib/presentationReview";
+import { resultStatus } from "@/lib/resultFilters";
 import { formatPrice } from "@/lib/normalize";
 import type { ExportRow } from "@/lib/exportResults";
 import type { ComparisonSession } from "@/types/database";
@@ -26,7 +26,7 @@ export default function PresentationReview({ session, rows, initialItemId, onRef
   const [error, setError] = useState("");
   const candidates = useMemo(() => {
     const unique = new Map<string, ExportRow>();
-    for (const row of rows) if (!completed.has(row.item.id) && (presentationReviewReason(row.item, row.product, row.change) || row.item.id === initialItemId)) unique.set(row.item.id, unique.get(row.item.id) ?? row);
+    for (const row of rows) if (!completed.has(row.item.id) && (resultStatus(row) === "presentations" || row.item.id === initialItemId)) unique.set(row.item.id, unique.get(row.item.id) ?? row);
     return [...unique.values()];
   }, [rows, completed, initialItemId]);
   const deferred = new Set(progress.deferred);
@@ -89,3 +89,4 @@ export default function PresentationReview({ session, rows, initialItemId, onRef
     </div>
   </section>;
 }
+

@@ -35,7 +35,7 @@ export default function ReviewQueue() {
     // proveedor que no está en tu catálogo, no hay ninguna sugerencia que
     // confirmar ni rechazar — no es algo para "revisar", es simplemente
     // información. Sólo entran los que sí tienen algo para decidir.
-    const pending = allItems.filter((i) => ["review", "presentation_diff"].includes(i.match_state));
+    const pending = allItems.filter((i) => i.match_state === "review");
     setItems(pending);
 
     const productIds = [...new Set(pending.map((i) => i.matched_product_id).filter(Boolean))] as string[];

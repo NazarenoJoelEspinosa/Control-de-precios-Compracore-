@@ -1,4 +1,5 @@
 import { presentationReviewReason } from "./presentationReview";
+import { resultStatus } from "./resultFilters";
 import { priceIssue } from "./pricePolicy";
 import { convertPresentationPrice } from "./presentationConversions";
 import type ExcelJS from "exceljs";
@@ -170,7 +171,8 @@ export async function exportAllResults(rows: ExportRow[], fileName: string) {
 
 /** Exporta solo los cambios aprobados — el archivo que efectivamente se usa para actualizar el sistema de gestión. */
 export async function exportApprovedOnly(rows: ExportRow[], fileName: string) {
-  const approved = rows.filter((r) => r.change?.status === "approved" && r.change.diff_absolute !== 0 && !priceIssue(r.item, r.product) && !presentationReviewReason(r.item, r.product, r.change));
+  const approved = rows.filter((r) => resultStatus(r) === "approved");
   const workbook = await buildWorkbook(approved, "PriceCore — Cambios aprobados", "Aprobados");
   await downloadWorkbook(workbook, fileName);
 }
+

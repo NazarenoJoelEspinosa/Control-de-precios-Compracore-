@@ -22,6 +22,12 @@ async function capture(action: () => Promise<void>) {
   } finally { create.mockRestore(); revoke.mockRestore(); vi.unstubAllGlobals(); }
 }
 describe("Excel de resultados", () => {
+  it("el Excel usa la misma definición de aprobados que la pantalla y excluye identidades pendientes", async () => {
+    const unconfirmed = row(); unconfirmed.item.match_state = "review";
+    const missing = row(); missing.product = null;
+    const sheet = await capture(() => exportApprovedOnly([row(), unconfirmed, missing], "test.xlsx"));
+    expect(sheet.rowCount).toBe(4);
+  });
   it("conserva precio original, convertido, monedas y divisor", async () => {
     const sheet = await capture(() => exportAllResults([row()], "test.xlsx"));
     expect(sheet.getRow(4).getCell(6).value).toBe(1000);
@@ -42,3 +48,4 @@ describe("Excel de resultados", () => {
     expect(sheet.getRow(4).getCell(10).value).toBe("Aprobado");
   });
 });
+
