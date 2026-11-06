@@ -25,7 +25,9 @@ export function planCatalog(existing: Product[], inputs: CatalogInput[], mode: C
   const used = new Set<string>();
   const rows = inputs.map((input, index) => {
     if (!input.code.trim() || !input.description.trim() || !Number.isFinite(input.current_price)) throw new Error("Revisá códigos, descripciones y precios antes de guardar.");
-    const exact = byKey.get(keys[index]) ?? [];
+    // Un encabezado de unidad puede contradecir la descripción (x1 frente a x2).
+    // Incluso con el mismo código, no trasladar cantidades en ese caso.
+    const exact = (byKey.get(keys[index]) ?? []).filter(p => samePresentation(p, input));
     if (exact.length > 1) throw new Error(`El catálogo anterior tiene duplicados de ${input.code}. Resolvelos antes de renovar.`);
     let previous = exact[0];
     if (links[index]) {

@@ -25,4 +25,5 @@ Los proveedores en papelera no aparecen en Catálogo ni en Nueva comparación. D
 - Comprobación TypeScript del código de producción y compilación Vite correctas.
 - 27 pruebas existentes de matching y exportación correctas. Se verificó el asistente completo desde la carga de ambos CSV hasta finalizar y exportar, y la ausencia de proveedores en papelera en Catálogo. Interfaz revisada a 1440×1000 y 390×844, sin desbordamiento horizontal en la carga de catálogo.
 - La prueba equivalente está en `src/lib/__tests__/catalogLifecycle.test.ts`, para ejecutarse junto al resto con `npm test`.
-- En el entorno de edición faltan `fake-indexeddb` y `react-test-renderer` en la caché disponible. Por eso no se pudo ejecutar la suite completa de Vitest ni el comando conjunto `npm run build` que incluye los archivos de pruebas. No se modificaron dependencias ni se excluyeron pruebas de la configuración del proyecto.
+- La verificación automática del PR ejecuta `npm ci`, la suite completa con `npm test` y `npm run build`. El resultado se consulta en los checks de GitHub. Las pruebas de producción y navegador locales complementan esa verificación; no se modificaron dependencias ni se excluyeron pruebas de la configuración del proyecto.
+- Se agregó una regresión para no trasladar memoria si la descripción cambia de x1 a x2 aunque la columna de unidad siga indicando x1.
