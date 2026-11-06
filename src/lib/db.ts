@@ -277,6 +277,12 @@ export const settingsRepo = {
 };
 
 export const supplierColumnConfigRepo = {
+  async saveCatalogNumberFormat(supplierId: string, format: NonNullable<SupplierColumnConfig["catalog_number_format"]>): Promise<void> {
+    const previous = await this.get(supplierId);
+    await this.save(supplierId, { code_column: null, description_column: null, price_column: null,
+      unit_column: null, brand_column: null, ean_column: null, currency_column: null,
+      ...previous, catalog_number_format: format });
+  },
   async get(supplierId: string): Promise<SupplierColumnConfig | undefined> {
     const db = await getDB();
     const rows = await db.getAllFromIndex("supplierColumnConfig", "bySupplier", supplierId);
@@ -593,3 +599,4 @@ export const priceChangesRepo = {
     await tx.done;
   },
 };
+

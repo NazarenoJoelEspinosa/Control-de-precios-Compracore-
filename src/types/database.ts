@@ -43,6 +43,8 @@ export interface SupplierColumnConfig {
   brand_column: string | null;
   ean_column: string | null;
   currency_column: string | null;
+  price_number_format?: "auto" | "comma_decimal" | "dot_decimal";
+  catalog_number_format?: "auto" | "comma_decimal" | "dot_decimal";
 }
 
 export interface Product {

@@ -118,7 +118,9 @@ export function trigrams(text: unknown): Set<string> {
 // ----------------------------------------------------------------------------
 export class InvalidPriceError extends Error {}
 
-export function parseDecimal(value: unknown): number {
+export type PriceNumberFormat = "auto" | "comma_decimal" | "dot_decimal";
+
+export function parseDecimal(value: unknown, format: PriceNumberFormat = "auto"): number {
   if (value === null || value === undefined) throw new InvalidPriceError("Precio vacío");
   if (typeof value === "number") {
     if (!Number.isFinite(value)) throw new InvalidPriceError("Precio no finito");
@@ -126,10 +128,19 @@ export function parseDecimal(value: unknown): number {
   }
   // Admitir símbolos conocidos, nunca rescatar dígitos de textos como «Consultar 123».
   let s = String(value).trim().toUpperCase();
-  for (const token of ["AR$", "ARS", "USD", "U$S", "$"]) s = s.split(token).join("");
+  for (const token of ["AR$", "ARS", "USD", "US$", "U$S", "U$D", "$"]) s = s.split(token).join("");
   s = s.replace(/\s+/g, "");
   if (/^-?[.,]\d+$/.test(s)) return roundTo2(Number(s.replace(",", ".")));
   if (!/^-?\d[\d.,]*$/.test(s)) throw new InvalidPriceError(`Precio inválido: ${value}`);
+  if (format !== "auto") {
+    const decimal = format === "comma_decimal" ? "," : ".";
+    const group = decimal === "," ? "." : ",";
+    const parts = s.split(decimal);
+    if (parts.length > 2 || !validGroupedInteger(parts[0], group) || (parts.length === 2 && !/^\d+$/.test(parts[1]))) {
+      throw new InvalidPriceError(`El precio ${value} no coincide con el formato elegido.`);
+    }
+    return roundTo2(Number(parts[0].split(group).join("") + (parts.length === 2 ? "." + parts[1] : "")));
+  }
   const comma = s.includes(","), dot = s.includes(".");
   if (comma && dot) {
     const decimal = s.lastIndexOf(",") > s.lastIndexOf(".") ? "," : ".";
@@ -148,7 +159,7 @@ export function parseDecimal(value: unknown): number {
     else throw new InvalidPriceError(`Separadores inválidos: ${value}`);
   } else if (dot) {
     const pieces = s.split(".");
-    if (pieces.length > 2 || pieces[1].length === 3) {
+    if (pieces.length > 2 || (pieces[1].length === 3 && validGroupedInteger(s, "."))) {
       if (!validGroupedInteger(s, ".")) throw new InvalidPriceError(`Separadores inválidos: ${value}`);
       s = pieces.join("");
     } else if (!/^\d+$/.test(pieces[1])) throw new InvalidPriceError(`Precio inválido: ${value}`);
@@ -280,3 +291,4 @@ export function presentationAlert(
   }
   return { oldLabel: oldInfo.label, newLabel: newInfo.label, reason: "" };
 }
+
