@@ -19,7 +19,7 @@ export default function CatalogIdentificationReview({ session, products, items, 
   });
   const [query, setQuery] = useState("");
   const [catalogQuery, setCatalogQuery] = useState("");
-  const [showDeferred, setShowDeferred] = useState(false);
+  const [showDeferred, setShowDeferred] = useState(() => progress.deferred.includes(progress.activeId));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [suggestions, setSuggestions] = useState(session.catalog_candidates ?? {});
@@ -72,12 +72,12 @@ export default function CatalogIdentificationReview({ session, products, items, 
     if (!active || busy) return;
     if (needsQuantities(item)) { setTeaching(item); return; }
     setBusy(true); setError("");
-    try { await confirmMatch(session, item, active.id); await onRefresh(); }
+    try { await confirmMatch(session, item, active.id); setProgress(p => ({ ...p, activeId: (visible[index + 1] ?? visible[index - 1])?.id ?? "" })); await onRefresh(); }
     catch (e) { setError(e instanceof Error ? e.message : "No se pudo vincular."); }
     finally { setBusy(false); }
   }
   return <section className="panel overflow-hidden" aria-label="Identificar mis artículos">
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-steel-50 p-4"><div><h2 className="font-display text-lg font-semibold">Mis artículos → lista del proveedor</h2><p className="mt-1 text-xs text-steel-600">{products.length} artículos propios pendientes. Elegí el equivalente del proveedor para cada uno; sus artículos que no vendés quedan fuera de esta cola.</p></div><button disabled={busy} className="text-sm text-teal-600" onClick={onClose}>Volver a resultados</button></div>
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-steel-50 p-4"><div><h2 className="font-display text-lg font-semibold">Mis artículos → lista del proveedor</h2><p className="mt-1 text-xs text-steel-600">{products.length} {products.length === 1 ? "artículo propio pendiente" : "artículos propios pendientes"}. Elegí el equivalente del proveedor para cada uno; sus artículos que no vendés quedan fuera de esta cola.</p></div><button disabled={busy} className="text-sm text-teal-600" onClick={onClose}>Volver a resultados</button></div>
     {error && <p role="alert" className="p-3 text-sm text-danger-500">{error}</p>}
     <div className="grid md:h-[70vh] md:min-h-[450px] md:grid-cols-[minmax(220px,2fr)_minmax(0,3fr)]">
       <div className="flex min-h-0 flex-col border-r"><div className="space-y-2 border-b p-3"><input aria-label="Buscar en mis artículos" value={catalogQuery} disabled={busy} onChange={e => setCatalogQuery(e.target.value)} placeholder="Buscar en mi catálogo…" className="field-control w-full"/><div className="flex gap-2">{[false, true].map(value => <button key={String(value)} disabled={busy} aria-pressed={showDeferred === value} onClick={() => setShowDeferred(value)} className={`rounded px-2 py-1 text-xs ${showDeferred === value ? "bg-teal-500 text-white" : "bg-steel-50"}`}>{value ? "Para después" : "Pendientes"} · {products.filter(p => progress.deferred.includes(p.id) === value).length}</button>)}</div></div>
@@ -86,7 +86,7 @@ export default function CatalogIdentificationReview({ session, products, items, 
       <div className="min-h-0 min-w-0 overflow-y-auto p-4">{active && <>
         <div className="mb-3 flex flex-wrap gap-2"><span className="mr-auto text-xs">Mi artículo {index + 1} de {visible.length}</span><button disabled={busy || index <= 0} onClick={() => move(-1)} className="field-control">Anterior</button><button disabled={busy || index >= visible.length - 1} onClick={() => move(1)} className="field-control">Siguiente</button></div>
         <div className="mb-4 rounded bg-teal-50 p-3"><p className="eyebrow">Mi artículo</p><h3 className="mt-1 font-semibold">{active.description}</h3><p className="mono-num text-xs">{active.code} · {active.unit} · {formatPrice(active.current_price, active.currency)}</p></div>
-        {teaching ? <><p className="mb-3 text-sm font-semibold">Equivalente del proveedor: {teaching.supplier_description}</p><PresentationConversionEditor key={`${active.id}:${teaching.id}`} session={session} item={teaching} preferredProductId={active.id} onBusyChange={setBusy} onResolved={async () => { setTeaching(null); await onRefresh(); }}/><button disabled={busy} onClick={() => setTeaching(null)} className="mt-3 text-sm text-teal-600">Elegir otro producto del proveedor</button></> : <>
+        {teaching ? <><p className="mb-3 text-sm font-semibold">Equivalente del proveedor: {teaching.supplier_description}</p><PresentationConversionEditor key={`${active.id}:${teaching.id}`} session={session} item={teaching} preferredProductId={active.id} onBusyChange={setBusy} onResolved={async () => { setTeaching(null); setProgress(p => ({ ...p, activeId: (visible[index + 1] ?? visible[index - 1])?.id ?? "" })); await onRefresh(); }}/><button disabled={busy} onClick={() => setTeaching(null)} className="mt-3 text-sm text-teal-600">Elegir otro producto del proveedor</button></> : <>
           <label className="block text-sm font-semibold">Buscar en la lista del proveedor<input aria-label="Buscar en la lista del proveedor" disabled={busy} value={query} onChange={e => { setQuery(e.target.value); setLimit(20); }} placeholder="Código o descripción del proveedor…" className="field-control mt-2 w-full"/></label>
           <p className="my-3 text-xs text-steel-600">{loading ? "Buscando candidatos para tus artículos…" : query.trim() ? `${candidates.length} resultados en la lista del proveedor` : `${candidates.length} candidatos para este artículo tuyo`}</p>
           <div className="space-y-2">{candidates.slice(0, limit).map(item => <div key={item.id} className="rounded border border-steel-200 p-3"><p className="text-sm font-semibold">{item.supplier_description}</p><p className="mono-num my-2 text-xs text-steel-600">Código proveedor: {item.supplier_code} · {item.parsed_price !== null ? formatPrice(item.parsed_price, item.supplier_currency ?? active.currency) : item.raw_price}</p><div className="flex flex-wrap gap-2"><button disabled={busy || loading} onClick={() => void linked(item)} className="rounded bg-teal-500 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{needsQuantities(item) ? "Confirmar cantidades" : "Vincular y seguir"}</button><button disabled={busy} onClick={() => setTeaching(item)} className="text-xs text-teal-600">Cantidades / varias presentaciones</button></div></div>)}</div>

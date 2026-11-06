@@ -70,7 +70,8 @@ export function selectCatalogCandidates(products: Product[], items: PriceListIte
     candidatesByProduct[product.id] = [...new Set([...learned.map(i => i.id), ...suggestions])];
     // Duplicados del proveedor no se resuelven eligiendo una fila arbitraria.
     // Las equivalencias específicas ya confirmadas sí conservan su memoria.
-    const chosen = new Set([...learned.map(i => i.id), ...(result.matchedProductId ? [result.matchedProductId] : [])]);
+    const unambiguousLearned = learned.filter(i => byCode.get(i.supplier_code)?.length === 1);
+    const chosen = new Set([...unambiguousLearned.map(i => i.id), ...(result.matchedProductId ? [result.matchedProductId] : [])]);
     for (const itemId of chosen) { const group = productIdsByItem.get(itemId); if (group) group.push(product.id); else productIdsByItem.set(itemId, [product.id]); }
   }
   return { productIdsByItem, candidatesByProduct };

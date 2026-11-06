@@ -16,3 +16,5 @@ Las comparaciones existentes pueden abrir la revisión en este sentido sin reimp
 - Caso de 1.800 artículos propios frente a 10.000 filas del proveedor: se seleccionan solamente los 1.800 códigos que se venden.
 - Integración con una lista de 501 filas y dos artículos propios: un equivalente encontrado y un artículo propio pendiente; los 500 productos restantes no llenan la cola.
 - La suite completa y la compilación se verifican en el workflow del PR.
+
+- Ocho comprobaciones de interfaz: artículo propio como punto de partida, búsqueda en todo el proveedor, apartar/retomar, precarga de ambas presentaciones y guardado de dos precios sin perder la asociación anterior.

@@ -1,6 +1,5 @@
 import { closeComparison } from "@/lib/comparisonLifecycle";
 import { updateComparisonLimits } from "@/lib/updateComparisonLimits";
-import { buildGapReasons, type GapReason } from "@/lib/gapReasons";
 import { presentationReviewReason } from "@/lib/presentationReview";
 import { matchesResultFilters, resultStatus, type ResultView, type ReviewKind, type ExtraFilter } from "@/lib/resultFilters";
 import PresentationReview from "./PresentationReview";
@@ -8,13 +7,11 @@ import { priceIssue } from "@/lib/pricePolicy";
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import clsx from "clsx";
-import { comparisonSessionsRepo, priceChangesRepo, priceListItemsRepo, productsRepo, suppliersRepo, equivalencesRepo, discontinuedCodesRepo } from "@/lib/db";
+import { comparisonSessionsRepo, priceChangesRepo, priceListItemsRepo, productsRepo } from "@/lib/db";
 import { MatchStateBadge, PriceDeltaBadge, ChangeStatusBadge } from "@/components/ui/StatusBadges";
 import PresentationConversionEditor from "@/components/PresentationConversionEditor";
 import { convertPresentationPrice } from "@/lib/presentationConversions";
-import MatchResolutionPanel from "@/components/MatchResolutionPanel";
 import { formatPrice } from "@/lib/normalize";
-import CatalogGapReview from "./CatalogGapReview";
 import { decidePriceChange, decidePriceChanges } from "@/lib/reviewActions";
 import { exportAllResults, exportApprovedOnly, type ExportRow } from "@/lib/exportResults";
 import type { ComparisonSession, PriceListItem, Product } from "@/types/database";
@@ -59,10 +56,7 @@ export default function ResultsPage() {
   const isClosed = session?.status === "closed";
   const [rows, setRows] = useState<ExportRow[]>([]);
   const [catalogGaps, setCatalogGaps] = useState<Product[]>([]);
-  const [ignoreEtPrefix, setIgnoreEtPrefix] = useState(false);
-  const [gapReasons, setGapReasons] = useState<Record<string, GapReason>>({});
   const [catalogTotal, setCatalogTotal] = useState(0);
-  const [showCatalogGaps, setShowCatalogGaps] = useState(false);
   const [view, setView] = useState<ResultView>("review");
   const [reviewKind, setReviewKind] = useState<ReviewKind>("all");
   const [filter, setFilter] = useState<ExtraFilter>("all");
@@ -98,8 +92,6 @@ export default function ResultsPage() {
       return;
     }
 
-    const supplier = await suppliersRepo.get(sessionData.supplier_id);
-    setIgnoreEtPrefix(supplier?.ignore_et_prefix === true);
     const items = await priceListItemsRepo.listByPriceList(sessionData.price_list_id);
     const changes = await priceChangesRepo.listBySession(sessionId);
     const productIds = [...new Set(items.flatMap((i) => i.matched_presentations?.map(c => c.product_id) ?? [i.matched_product_id]).filter(Boolean))] as string[];
@@ -120,23 +112,17 @@ export default function ResultsPage() {
       setView((["review", "pending", "approved", "unchanged"] as ResultView[]).find(v => merged.some(row => matchesResultFilters(row, v, "all", "all"))) ?? "all");
     }
 
-    // Sentido inverso al de "no encontrados": de TU catálogo para este
-    // proveedor, cuáles no aparecieron en absoluto en esta lista. Se deriva
-    // en vivo de lo ya cargado — cualquier producto con al menos un ítem que
-    // le haya quedado asociado (sea cual sea su match_state) cuenta como
-    // "sí apareció".
+    // La tarea de identidad se calcula desde cada artículo propio pendiente.
+    // Una sugerencia aún no confirmada no cuenta como artículo identificado.
     const catalogProducts = (sessionData.status === "closed" && sessionData.catalog_snapshot ? sessionData.catalog_snapshot : await productsRepo.listBySupplier(sessionData.supplier_id)).filter((p) => p.active);
     const matchedProductIds = new Set(items.filter(i => i.match_state === "safe").flatMap((i) => i.matched_presentations?.map(c => c.product_id) ?? [i.matched_product_id]).filter(Boolean) as string[]);
     const gaps = catalogProducts.filter((p) => !matchedProductIds.has(p.id));
     setCatalogGaps(gaps);
-    const [equivalences, discontinued] = await Promise.all([equivalencesRepo.listForSupplier(sessionData.supplier_id), discontinuedCodesRepo.listForSupplier(sessionData.supplier_id)]);
-    setGapReasons(buildGapReasons(gaps, items, supplier?.ignore_et_prefix === true, equivalences, discontinued));
     setCatalogTotal(catalogProducts.length);
 
     setLoading(false);
   }
 
-  const notFoundItems = useMemo(() => [...new Map(rows.map(r => [r.item.id, r.item])).values()], [rows]);
 
   const filtered = useMemo(() => {
     let result = rows.filter((row) => {
@@ -275,18 +261,6 @@ export default function ResultsPage() {
 
       {!isClosed && presentationReview ? (
         <PresentationReview key={`${session.id}:${restoreEpoch}`} session={session} rows={rows} initialItemId={presentationReview.initialItemId} onRefresh={() => load(true)} onClose={() => setPresentationReview(null)} />
-      ) : !isClosed && showCatalogGaps ? (
-        <CatalogGapReview
-          key={`${session.id}:${restoreEpoch}`}
-          session={session}
-          products={catalogGaps}
-          reasons={gapReasons}
-          onTeachPresentations={itemId => setPresentationReview({ initialItemId: itemId })}
-          ignoreEtPrefix={ignoreEtPrefix}
-          items={notFoundItems}
-          onRefresh={() => load(true)}
-          onClose={() => setShowCatalogGaps(false)}
-        />
       ) : (
         <>
       <div className="panel mb-4 space-y-3 p-3">

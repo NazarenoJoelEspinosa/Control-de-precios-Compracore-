@@ -36,5 +36,5 @@ export default function ReviewQueue() {
   if (error) return <p role="alert" className="text-danger-500">{error}</p>;
   if (!session) return <p>No se encontró la comparación.</p>;
   if (session.status === "closed") return <p>Esta comparación está finalizada. <Link to={`/comparisons/${session.id}`}>Ver resultados</Link></p>;
-  return <CatalogIdentificationReview session={session} products={products} items={items} equivalences={equivalences} discontinued={discontinued} ignoreEtPrefix={ignorePrefix} initialProductId={searchParams.get("productId") ?? undefined} onRefresh={load} onClose={() => navigate(`/comparisons/${session.id}`)} />;
+  return <CatalogIdentificationReview key={session.id} session={session} products={products} items={items} equivalences={equivalences} discontinued={discontinued} ignoreEtPrefix={ignorePrefix} initialProductId={searchParams.get("productId") ?? undefined} onRefresh={load} onClose={() => navigate(`/comparisons/${session.id}`)} />;
 }

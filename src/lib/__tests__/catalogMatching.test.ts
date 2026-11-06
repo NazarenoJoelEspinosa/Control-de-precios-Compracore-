@@ -40,6 +40,12 @@ describe("mi catálogo busca dentro del universo del proveedor", () => {
     expect(result.candidatesByProduct.own.sort()).toEqual(["one", "two"]);
     expect(result.productIdsByItem.size).toBe(0);
   });
+  it("un código aprendido tampoco elige entre filas duplicadas de la lista nueva", () => {
+    const own = product("own", "MIO");
+    const result = selectCatalogCandidates([own], [item("one", "CAJA"), item("two", "CAJA")], [memory(own)], new Set(), options);
+    expect(result.candidatesByProduct.own.sort()).toEqual(["one", "two"]);
+    expect(result.productIdsByItem.size).toBe(0);
+  });
   it("encuentra un modelo al final de la lista usando tokens raros dentro del cupo", () => {
     const own = product("own", "MIO", "LLAVE INDUSTRIAL MODELOUNICO");
     const source = [...Array.from({ length: 1000 }, (_, i) => item(`noise${i}`, `P${i}`, "LLAVE INDUSTRIAL COMUN")), item("last", "PUNICO", "LLAVE INDUSTRIAL MODELOUNICO")];
