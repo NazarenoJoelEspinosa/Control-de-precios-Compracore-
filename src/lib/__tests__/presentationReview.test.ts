@@ -51,7 +51,9 @@ describe("flujo de aprobación protegido", () => {
   it("mantiene el código identificado, bloquea aprobar el precio de caja y permite aprobarlo después de enseñar x50 a x1", async () => {
     const r = example(); const db = await getDB();
     await db.put("products", r.product!);
-    await suppliersRepo.create({ name: "Test", code: "", email: "", phone: "", active: true, price_includes_vat: false, vat_rate: 21, default_currency: "ARS", notes: "" });
+    const supplier = await suppliersRepo.create({ name: "Test", code: "", email: "", phone: "", active: true, price_includes_vat: false, vat_rate: 21, default_currency: "ARS", notes: "" });
+    await db.delete("suppliers", supplier.id);
+    await db.put("suppliers", { ...supplier, id: "s" });
     const list = await priceListsRepo.create({ supplier_id: "s", file_name: "lista", row_count: 1, status: "mapped", column_mapping: null });
     await db.put("priceListItems", { ...r.item, price_list_id: list.id });
     const sessionId = await runMatchingForPriceList(list.id, "s");
@@ -78,3 +80,4 @@ describe("flujo de aprobación protegido", () => {
     expect((await db.get("priceChanges", "other"))?.status).toBe("pending");
   });
 });
+

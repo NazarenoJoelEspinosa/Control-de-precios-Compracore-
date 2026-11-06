@@ -10,6 +10,7 @@ import type { PriceListItem, Product } from "@/types/database";
 beforeEach(async () => {
   const db = await getDB();
   for (const name of db.objectStoreNames) await db.clear(name);
+  for (const id of ["s1", "s2"]) await db.put("suppliers", { id, name: id, code: id, email: "", phone: "", active: true, price_includes_vat: false, vat_rate: 21, default_currency: "ARS", notes: "", created_at: "", updated_at: "" });
 });
 async function fixture() {
   const products: Product[] = [];
@@ -112,3 +113,4 @@ describe("Presentaciones por artículo", () => {
     expect(invalid.matched_presentations).toHaveLength(1);
   });
 });
+

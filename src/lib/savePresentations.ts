@@ -17,6 +17,7 @@ export async function savePresentations(session: ComparisonSession, item: PriceL
     const currentSession = await tx.objectStore("comparisonSessions").get(session.id);
     const currentItem = await tx.objectStore("priceListItems").get(item.id);
     if (!currentSession || !currentItem || currentSession.price_list_id !== currentItem.price_list_id || currentSession.supplier_id !== session.supplier_id) throw new Error("La comparación ya no está disponible.");
+    if (currentSession.status === "closed") throw new Error("Esta comparación está finalizada.");
     const finishUndo = await beginUndoAction(tx, `Enseñar ${conversions.length} presentación(es) de ${currentItem.supplier_code}`, { sessionId: session.id, supplierId: session.supplier_id, itemIds: [item.id], supplierCodes: [currentItem.supplier_code] });
     // Una relación específica enseñada por el usuario resuelve un conflicto de reglas generales.
     const resolvedItem = { ...currentItem, comparison_error: null };
@@ -60,3 +61,4 @@ export async function savePresentations(session: ComparisonSession, item: PriceL
     throw error;
   }
 }
+

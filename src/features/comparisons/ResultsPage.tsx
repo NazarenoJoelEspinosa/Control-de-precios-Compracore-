@@ -1,3 +1,4 @@
+import { closeComparison } from "@/lib/comparisonLifecycle";
 import { updateComparisonLimits } from "@/lib/updateComparisonLimits";
 import { buildGapReasons, type GapReason } from "@/lib/gapReasons";
 import { presentationReviewReason } from "@/lib/presentationReview";
@@ -55,6 +56,7 @@ export default function ResultsPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
   const [session, setSession] = useState<ComparisonSession | null>(null);
+  const isClosed = session?.status === "closed";
   const [rows, setRows] = useState<ExportRow[]>([]);
   const [catalogGaps, setCatalogGaps] = useState<Product[]>([]);
   const [ignoreEtPrefix, setIgnoreEtPrefix] = useState(false);
@@ -100,7 +102,7 @@ export default function ResultsPage() {
     const items = await priceListItemsRepo.listByPriceList(sessionData.price_list_id);
     const changes = await priceChangesRepo.listBySession(sessionId);
     const productIds = [...new Set(items.flatMap((i) => i.matched_presentations?.map(c => c.product_id) ?? [i.matched_product_id]).filter(Boolean))] as string[];
-    const products = await productsRepo.getMany(productIds);
+    const products = sessionData.status === "closed" && sessionData.catalog_snapshot ? sessionData.catalog_snapshot : await productsRepo.getMany(productIds);
 
     const productsById = new Map(products.map((p) => [p.id, p]));
     const changesByPair = new Map(changes.map((c) => [`${c.price_list_item_id}::${c.product_id}`, c]));
@@ -118,7 +120,7 @@ export default function ResultsPage() {
     // en vivo de lo ya cargado — cualquier producto con al menos un ítem que
     // le haya quedado asociado (sea cual sea su match_state) cuenta como
     // "sí apareció".
-    const catalogProducts = (await productsRepo.listBySupplier(sessionData.supplier_id)).filter((p) => p.active);
+    const catalogProducts = (sessionData.status === "closed" && sessionData.catalog_snapshot ? sessionData.catalog_snapshot : await productsRepo.listBySupplier(sessionData.supplier_id)).filter((p) => p.active);
     const matchedProductIds = new Set(items.flatMap((i) => i.matched_presentations?.map(c => c.product_id) ?? [i.matched_product_id]).filter(Boolean) as string[]);
     const gaps = catalogProducts.filter((p) => !matchedProductIds.has(p.id));
     setCatalogGaps(gaps);
@@ -206,6 +208,14 @@ export default function ResultsPage() {
     catch (e) { setActionError(e instanceof Error ? e.message : "No se pudieron actualizar los límites."); }
     finally { setDeciding(false); }
   }
+  async function finalize() {
+    if (!session || deciding || !window.confirm("¿Finalizar esta comparación? Conservaremos resultados y aprendizaje. Los pendientes quedan sin aprobar. Verificá que exportaste lo necesario para OneSoft. La siguiente actualización pedirá archivos nuevos.")) return;
+    setDeciding(true); setActionError("");
+    try { await closeComparison(session.id); navigate("/history"); }
+    catch (e) { setActionError(e instanceof Error ? e.message : "No se pudo finalizar."); }
+    finally { setDeciding(false); }
+  }
+
   async function handleDeleteSession() {
     if (!session) return;
     if (!window.confirm("¿Eliminar esta comparación? Se borra de forma permanente, junto con todos sus resultados.")) return;
@@ -219,6 +229,7 @@ export default function ResultsPage() {
   return (
     <div>
       {actionError && <p role="alert" className="mb-3 rounded bg-danger-50 p-3 text-sm text-danger-500">{actionError}</p>}
+      {session.status === "closed" && <p className="mb-4 rounded bg-teal-50 p-3 text-sm">Comparación finalizada. Los resultados se conservan para consultar y exportar. <Link className="font-semibold underline" to="/comparisons/new">Iniciar nueva actualización</Link></p>}
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="eyebrow">Comparación</p>
@@ -227,16 +238,17 @@ export default function ResultsPage() {
           </h1>
         </div>
         <div className="flex flex-wrap gap-2">
-          {presentationReviewCount > 0 && <button onClick={() => setPresentationReview({})} className="rounded bg-amber-600 px-3 py-2 text-sm font-semibold text-white">Revisar presentaciones ({presentationReviewCount})</button>}
-          {catalogGaps.length > 0 && (
+          {session.status === "open" && <button disabled={deciding || isClosed} onClick={() => void finalize()} className="rounded bg-teal-500 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">Finalizar comparación</button>}
+          {session.status === "open" && presentationReviewCount > 0 && <button disabled={isClosed} onClick={() => setPresentationReview({})} className="rounded bg-amber-600 px-3 py-2 text-sm font-semibold text-white">Revisar presentaciones ({presentationReviewCount})</button>}
+          {session.status === "open" && catalogGaps.length > 0 && (
             <button
-              onClick={() => setShowCatalogGaps(true)}
+              disabled={isClosed} onClick={() => setShowCatalogGaps(true)}
               className="rounded bg-violet-500 px-3 py-2 text-sm font-semibold text-white hover:bg-violet-500/90"
             >
               Encontrar los {catalogGaps.length} de mi catálogo
             </button>
           )}
-          {pendingReviewCount > 0 && (
+          {session.status === "open" && pendingReviewCount > 0 && (
             <Link
               to={`/comparisons/${session.id}/review`}
               className="rounded border border-steel-200 px-3 py-2 text-sm font-medium text-steel-600 hover:bg-steel-50"
@@ -279,7 +291,7 @@ export default function ResultsPage() {
         <MiniStat label="Filas del proveedor" value={session.total_items} hint="ítems de la lista del proveedor" />
         <MiniStat label="Productos identificados" value={session.safe_matches} tone="text-success-500" />
         <MiniStat label="Por revisar" value={allReviewCount} tone="text-amber-600" />
-        <button onClick={() => setPresentationReview({})} className="text-left"><MiniStat
+        <button disabled={isClosed} onClick={() => setPresentationReview({})} className="text-left"><MiniStat
           label="Presentaciones a revisar" value={presentationReviewCount} tone="text-amber-600"
           hint="incluye diferencias grandes de precio: suba desde 100% o baja desde 50%, sin relación confirmada" clickable
         /></button>
@@ -290,7 +302,7 @@ export default function ResultsPage() {
           hint="de SU lista, sin equivalente en tu catálogo"
         />
         <MiniStat label="Discontinuados" value={session.discontinued_items} tone="text-steel-600" />
-        <button onClick={() => setShowCatalogGaps((v) => !v)} className="text-left">
+        <button disabled={isClosed} onClick={() => setShowCatalogGaps((v) => !v)} className="text-left">
           <MiniStat
             label="De tu catálogo, no en su lista"
             value={catalogGaps.length}
@@ -305,18 +317,18 @@ export default function ResultsPage() {
         <h2 className="mb-3 text-sm font-semibold">Tu avance</h2>
         <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
           <button onClick={() => { setPresentationReview(null); setShowCatalogGaps(false); setView("all"); setFilter("safe"); setSearch(""); setReviewKind("all"); }} className="rounded bg-steel-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{identifiedOwnCount}</strong>artículos propios identificados</button>
-          <button onClick={() => setPresentationReview({})} className="rounded bg-amber-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{presentationReviewCount}</strong>presentaciones por revisar</button>
-          <button onClick={() => { setPresentationReview(null); setShowCatalogGaps(true); }} className="rounded bg-violet-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{catalogGaps.length}</strong>faltantes de mi catálogo</button>
+          <button disabled={isClosed} onClick={() => setPresentationReview({})} className="rounded bg-amber-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{presentationReviewCount}</strong>presentaciones por revisar</button>
+          <button disabled={isClosed} onClick={() => { setPresentationReview(null); setShowCatalogGaps(true); }} className="rounded bg-violet-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{catalogGaps.length}</strong>faltantes de mi catálogo</button>
           <button onClick={() => { setPresentationReview(null); setShowCatalogGaps(false); setView("pending"); setFilter("all"); setSearch(""); }} className="rounded bg-teal-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{rows.filter(r => matchesResultFilters(r, "pending", "all", "all")).length}</strong>precios listos para aprobar</button>
           <button onClick={() => { setPresentationReview(null); setShowCatalogGaps(false); setView("approved"); setFilter("all"); setSearch(""); }} className="rounded bg-steel-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{rows.filter(r => matchesResultFilters(r, "approved", "all", "all")).length}</strong>precios aprobados</button>
         </div>
         <div className="mt-3"><label htmlFor="catalog-progress" className="mb-1 block text-xs text-steel-600">Catálogo identificado: {catalogTotal ? Math.round(identifiedOwnCount / catalogTotal * 100) : 0}% · {identifiedOwnCount} de {catalogTotal} artículos propios. Una fila del proveedor puede identificar varias presentaciones.</label><progress id="catalog-progress" max={Math.max(1, catalogTotal)} value={identifiedOwnCount} className="h-2 w-full accent-teal-500" /></div>
-        <details className="mt-2 text-xs text-steel-600"><summary className="cursor-pointer">Límites de los avisos de precio</summary><p className="mt-2">Esta comparación avisa desde +{rows[0]?.item.presentation_limits?.increase ?? 100}% / −{rows[0]?.item.presentation_limits?.decrease ?? 50}%. Podés editar los límites en la ficha del proveedor y aplicarlos aquí.</p><button disabled={deciding} onClick={refreshLimits} className="mt-2 rounded border border-steel-200 px-3 py-2 text-teal-600 disabled:opacity-50">Actualizar límites del proveedor</button></details>
+        <details className="mt-2 text-xs text-steel-600"><summary className="cursor-pointer">Límites de los avisos de precio</summary><p className="mt-2">Esta comparación avisa desde +{rows[0]?.item.presentation_limits?.increase ?? 100}% / −{rows[0]?.item.presentation_limits?.decrease ?? 50}%. Podés editar los límites en la ficha del proveedor y aplicarlos aquí.</p><button disabled={deciding || isClosed} onClick={refreshLimits} className="mt-2 rounded border border-steel-200 px-3 py-2 text-teal-600 disabled:opacity-50">Actualizar límites del proveedor</button></details>
       </section>
 
-      {presentationReview ? (
+      {!isClosed && presentationReview ? (
         <PresentationReview key={`${session.id}:${restoreEpoch}`} session={session} rows={rows} initialItemId={presentationReview.initialItemId} onRefresh={() => load(true)} onClose={() => setPresentationReview(null)} />
-      ) : showCatalogGaps ? (
+      ) : !isClosed && showCatalogGaps ? (
         <CatalogGapReview
           key={`${session.id}:${restoreEpoch}`}
           session={session}
@@ -357,12 +369,12 @@ export default function ResultsPage() {
         <details className="text-xs text-steel-600"><summary className="cursor-pointer">Más filtros{filter !== "all" ? " · 1 activo" : ""}</summary>
           <div className="mt-2 flex flex-wrap items-center gap-2"><select aria-label="Filtro adicional" value={filter} onChange={e => setFilter(e.target.value as ExtraFilter)} className="field-control max-w-full">{EXTRA_FILTERS.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}</select>{filter !== "all" && <button onClick={() => setFilter("all")} className="text-teal-600">Quitar filtro adicional</button>}<span>Se combina con la pestaña y la búsqueda actuales.</span></div>
         </details>
-        {view === "review" && reviewKind === "presentations" && <button onClick={() => setPresentationReview({})} className="rounded bg-amber-600 px-3 py-2 text-xs font-semibold text-white">Abrir revisión continua de presentaciones</button>}
+        {view === "review" && reviewKind === "presentations" && <button disabled={isClosed} onClick={() => setPresentationReview({})} className="rounded bg-amber-600 px-3 py-2 text-xs font-semibold text-white">Abrir revisión continua de presentaciones</button>}
       </div>
 
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-steel-600">Las coincidencias cuentan filas del proveedor. Los precios cuentan tus artículos, incluidas sus presentaciones.</p>
-        {pendingPrices.length > 0 && <button disabled={deciding} onClick={approveFiltered} className="rounded bg-success-500 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">Aprobar {pendingPrices.length} precios filtrados</button>}
+        {session.status === "open" && pendingPrices.length > 0 && <button disabled={deciding || isClosed} onClick={approveFiltered} className="rounded bg-success-500 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">Aprobar {pendingPrices.length} precios filtrados</button>}
       </div>
       {(filter === "increased" || filter === "decreased") && (
         <p className="mb-3 text-xs text-steel-600">
@@ -415,17 +427,17 @@ export default function ResultsPage() {
                 </td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex justify-end gap-1">
-                    {row.change && row.change.status !== "rejected" && (
+                    {session.status === "open" && row.change && row.change.status !== "rejected" && (
                       <button
-                        disabled={deciding}
+                        disabled={deciding || isClosed}
                         onClick={() => decide(row, "rejected")}
                         className="rounded bg-danger-50 px-2 py-1 text-xs font-medium text-danger-500 hover:bg-danger-500 hover:text-white"
                       >
                         Rechazar
                       </button>
                     )}
-                    {row.change && row.change.diff_absolute !== 0 && ["pending", "edited"].includes(row.change.status) && !priceIssue(row.item, row.product) && !presentationReviewReason(row.item, row.product, row.change) && <button disabled={deciding} onClick={() => decide(row, "approved")} className="rounded bg-success-500 px-2 py-1 text-xs font-medium text-white">Aprobar precio</button>}
-                    {row.change && row.change.status === "rejected" && !priceIssue(row.item, row.product) && !presentationReviewReason(row.item, row.product, row.change) && (
+                    {session.status === "open" && row.change && row.change.diff_absolute !== 0 && ["pending", "edited"].includes(row.change.status) && !priceIssue(row.item, row.product) && !presentationReviewReason(row.item, row.product, row.change) && <button disabled={deciding || isClosed} onClick={() => decide(row, "approved")} className="rounded bg-success-500 px-2 py-1 text-xs font-medium text-white">Aprobar precio</button>}
+                    {session.status === "open" && row.change && row.change.status === "rejected" && !priceIssue(row.item, row.product) && !presentationReviewReason(row.item, row.product, row.change) && (
                       <button
                         onClick={() => decide(row, "approved")}
                         className="rounded bg-steel-100 px-2 py-1 text-xs font-medium text-steel-600 hover:bg-steel-200"
@@ -433,7 +445,7 @@ export default function ResultsPage() {
                         Aprobar precio
                       </button>
                     )}
-                    {(row.product || row.item.match_state === "presentation_diff") && <button onClick={() => setPresentationReview({ initialItemId: row.item.id })} className="rounded bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-600">{presentationReviewReason(row.item, row.product, row.change) ? "Revisar presentación" : "Enseñar presentación"}</button>}
+                    {session.status === "open" && (row.product || row.item.match_state === "presentation_diff") && <button onClick={() => setPresentationReview({ initialItemId: row.item.id })} className="rounded bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-600">{presentationReviewReason(row.item, row.product, row.change) ? "Revisar presentación" : "Enseñar presentación"}</button>}
                     <button
                       onClick={() => setSelected(row)}
                       className="rounded px-2 py-1 text-xs font-medium text-steel-600 hover:bg-steel-100"
@@ -577,9 +589,9 @@ function ProductDrawer({
           </Section>
         )}
 
-        {!needsResolution && <PresentationConversionEditor session={session} item={row.item} onResolved={onResolved} />}
+        {session.status === "open" && !needsResolution && <PresentationConversionEditor session={session} item={row.item} onResolved={onResolved} />}
 
-        {needsResolution && (
+        {session.status === "open" && needsResolution && (
           <MatchResolutionPanel session={session} item={row.item} suggestedProduct={row.product} onResolved={onResolved} />
         )}
       </div>
@@ -623,4 +635,5 @@ function matchLevelLabel(level: PriceListItem["match_level"]): string {
       return "Sin match";
   }
 }
+
 

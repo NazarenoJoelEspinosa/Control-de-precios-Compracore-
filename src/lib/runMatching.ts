@@ -6,12 +6,11 @@ import { learnedPresentations, presentationChange, ruleConversion } from "./pres
 import { normalizeCodeForMatch, normalizeText, parseDecimal } from "./normalize";
 import { buildProductIndexEntry, matchItem, type MatchDeps, type ProductForMatch, type MatchResult } from "./matching";
 import {
-  comparisonSessionsRepo,
+  getDB, newId, nowISO,
   discontinuedCodesRepo,
   equivalencesRepo,
   priceChangesRepo,
   priceListItemsRepo,
-  priceListsRepo,
   productsRepo,
   settingsRepo,
   suppliersRepo,
@@ -173,18 +172,30 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
   }
   const summary = comparisonStats(updatedItems, changesToCreate, activeProducts);
 
-  const session: ComparisonSession = await comparisonSessionsRepo.create({
+  const session: ComparisonSession = {
+    id: newId(), created_at: nowISO(),
     supplier_id: supplierId,
     price_list_id: priceListId,
     status: "open",
+    catalog_snapshot: activeProducts,
     ...summary,
-  });
-
-  await priceListItemsRepo.bulkUpdate(updatedItems);
-  if (changesToCreate.length > 0) {
-    await priceChangesRepo.bulkCreate(changesToCreate.map((c) => ({ ...c, comparison_session_id: session.id })));
-  }
-  await priceListsRepo.updateStatus(priceListId, "processed");
+  };
+  const db = await getDB();
+  const tx = db.transaction(["products", "suppliers", "comparisonSessions", "priceListItems", "priceChanges", "priceLists"], "readwrite");
+  try {
+    const currentSupplier = await tx.objectStore("suppliers").get(supplierId);
+    if (!currentSupplier?.active || currentSupplier.deleted_at) throw new Error("El proveedor ya no está activo.");
+    const currentCatalog = (await tx.objectStore("products").index("bySupplier").getAll(supplierId)).filter(p => p.active);
+    if (JSON.stringify(currentCatalog) !== JSON.stringify(activeProducts)) throw new Error("El catálogo cambió durante el procesamiento. Volvé a iniciar la comparación.");
+    await tx.objectStore("comparisonSessions").put(session);
+    for (const item of updatedItems) await tx.objectStore("priceListItems").put(item);
+    for (const change of changesToCreate) await tx.objectStore("priceChanges").put({ ...change, id: newId(), created_at: nowISO(), comparison_session_id: session.id });
+    const priceList = await tx.objectStore("priceLists").get(priceListId);
+    if (!priceList || priceList.supplier_id !== supplierId) throw new Error("La lista ya no está disponible.");
+    await tx.objectStore("priceLists").put({ ...priceList, status: "processed" });
+    await tx.done;
+  } catch (error) { try { tx.abort(); } catch { /* Ya abortada. */ } await tx.done.catch(() => undefined); throw error; }
 
   return session.id;
 }
+

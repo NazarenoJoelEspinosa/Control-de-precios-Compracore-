@@ -1,3 +1,4 @@
+import ImportCatalogForm from "@/features/catalog/ImportCatalogForm";
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import clsx from "clsx";
@@ -8,7 +9,7 @@ import { parseSpreadsheetFile, type ParsedFile } from "@/lib/fileParsing";
 import { suggestColumnMapping, type ColumnMapping } from "@/lib/columnMapping";
 import type { Supplier } from "@/types/database";
 
-const STEPS = ["Proveedor", "Lista nueva", "Confirmar columnas", "Procesar"] as const;
+const STEPS = ["Proveedor", "Tu catálogo actual", "Lista nueva", "Confirmar columnas", "Procesar"] as const;
 
 export default function NewComparisonWizard() {
   const navigate = useNavigate();
@@ -27,7 +28,7 @@ export default function NewComparisonWizard() {
   const [processError, setProcessError] = useState<string | null>(null);
 
   useEffect(() => {
-    suppliersRepo.list().then((all) => setSuppliers(all.filter((s) => s.active)));
+    suppliersRepo.list().then((all) => setSuppliers(all.filter((s) => s.active && !s.deleted_at)));
   }, []);
 
   useEffect(() => {
@@ -38,7 +39,7 @@ export default function NewComparisonWizard() {
     // El tamaño relevante es el de LA CARPETA de este proveedor — el
     // matching nunca mira el catálogo de los demás, así que avisar sobre el
     // total general sería engañoso.
-    productsRepo.listBySupplier(supplierId).then((list) => setCatalogSize(list.length));
+    productsRepo.listBySupplier(supplierId).then((list) => setCatalogSize(list.filter(p => p.active).length));
   }, [supplierId]);
 
   async function handleSupplierFile(file: File) {
@@ -162,23 +163,25 @@ export default function NewComparisonWizard() {
         ))}
       </ol>
 
-      {processError && step !== 3 && <p role="alert" className="mb-3 rounded bg-danger-50 p-3 text-sm text-danger-500">{processError}</p>}
+      {processError && step !== 4 && <p role="alert" className="mb-3 rounded bg-danger-50 p-3 text-sm text-danger-500">{processError}</p>}
       <div className="panel p-6">
         {step === 0 && (
           <StepSupplier suppliers={suppliers} value={supplierId} onChange={id => { setSupplierId(id); setSupplierFile(null); setSupplierParsed(null); setMapping({}); setMappingRemembered(false); }} onNext={() => setStep(1)} />
         )}
 
-        {step === 1 && (
+        {step === 1 && <div className="space-y-4"><h2 className="font-display text-lg font-semibold">Cargá tu catálogo actual de OneSoft</h2><ImportCatalogForm key={supplierId} supplierId={supplierId} onDone={() => { productsRepo.listBySupplier(supplierId).then(p => setCatalogSize(p.filter(x => x.active).length)); setStep(2); }}/><button className="text-sm text-steel-600" onClick={() => setStep(0)}>Atrás</button></div>}
+
+        {step === 2 && (
           <StepUpload
             file={supplierFile}
             onFile={file => { handleSupplierFile(file).catch(e => setProcessError(e instanceof Error ? e.message : "No se pudo leer el archivo")); }}
-            onBack={() => setStep(0)}
-            onNext={() => setStep(2)}
+            onBack={() => setStep(1)}
+            onNext={() => setStep(3)}
             nextDisabled={!supplierParsed}
           />
         )}
 
-        {step === 2 && supplierParsed && (
+        {step === 3 && supplierParsed && (
           <StepMapping
             headers={supplierParsed.headers}
             mapping={mapping}
@@ -187,17 +190,17 @@ export default function NewComparisonWizard() {
               setMapping(m);
               setMappingRemembered(false); // si lo toca a mano, ya no es "el recordado tal cual"
             }}
-            onBack={() => setStep(1)}
-            onNext={() => setStep(3)}
+            onBack={() => setStep(2)}
+            onNext={() => setStep(4)}
             previewRows={supplierParsed.rows.slice(0, 6)}
           />
         )}
 
-        {step === 3 && (
+        {step === 4 && (
           <StepProcess
             processing={processing}
             error={processError}
-            onBack={() => setStep(2)}
+            onBack={() => setStep(3)}
             onRun={runComparison}
             itemCount={supplierParsed?.rows.length ?? 0}
           />
@@ -270,7 +273,7 @@ function StepUpload({
 }) {
   return (
     <div>
-      <h2 className="mb-1 font-display text-lg font-semibold text-ink">Paso 2 — Cargar lista nueva del proveedor</h2>
+      <h2 className="mb-1 font-display text-lg font-semibold text-ink">Paso 3 — Cargar lista nueva del proveedor</h2>
       <p className="mb-4 text-sm text-steel-600">
         XLSX, XLS o CSV. Detectamos automáticamente el formato y la fila de encabezado.
       </p>
@@ -333,7 +336,7 @@ function StepMapping({
   const requiredOk = mapping.code && mapping.description && mapping.price;
   return (
     <div>
-      <h2 className="mb-1 font-display text-lg font-semibold text-ink">Paso 3 — Confirmar columnas</h2>
+      <h2 className="mb-1 font-display text-lg font-semibold text-ink">Paso 4 — Confirmar columnas</h2>
       <p className="mb-4 text-sm text-steel-600">
         {remembered
           ? "Reconocimos este formato de este proveedor y ya completamos el mapeo que usaste la última vez. Revisá que siga siendo correcto."
@@ -407,7 +410,7 @@ function StepProcess({
 }) {
   return (
     <div>
-      <h2 className="mb-1 font-display text-lg font-semibold text-ink">Paso 4 — Procesar</h2>
+      <h2 className="mb-1 font-display text-lg font-semibold text-ink">Paso 5 — Procesar</h2>
       <p className="mb-4 text-sm text-steel-600">
         Vamos a comparar <span className="mono-num font-medium text-ink">{itemCount}</span> productos contra tu
         catálogo guardado. Corre acá mismo, en tu navegador.
@@ -432,3 +435,4 @@ function StepProcess({
     </div>
   );
 }
+

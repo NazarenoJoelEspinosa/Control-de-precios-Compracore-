@@ -6,6 +6,7 @@ export async function updateComparisonLimits(sessionId: string): Promise<void> {
   const db = await getDB(); const tx = db.transaction(["suppliers", "priceListItems", "priceChanges", "comparisonSessions", "products", "undoHistory"], "readwrite");
   try {
     const session = await tx.objectStore("comparisonSessions").get(sessionId); if (!session) throw new Error("La comparación ya no está disponible.");
+    if (session.status === "closed") throw new Error("Esta comparación está finalizada.");
     const supplier = await tx.objectStore("suppliers").get(session.supplier_id);
     const items = await tx.objectStore("priceListItems").index("byPriceList").getAll(session.price_list_id);
     const finish = await beginUndoAction(tx, "Actualizar límites de revisión", { sessionId, supplierId: session.supplier_id, itemIds: items.map(i => i.id) });
@@ -18,3 +19,4 @@ export async function updateComparisonLimits(sessionId: string): Promise<void> {
     await finish(); await tx.done;
   } catch (error) { try { tx.abort(); } catch { /* Ya abortada. */ } await tx.done.catch(() => undefined); throw error; }
 }
+

@@ -122,6 +122,8 @@ export interface ComparisonSession {
   price_unchanged: number;
   approved_changes: number;
   status: "open" | "closed";
+  closed_at?: string;
+  catalog_snapshot?: Product[];
   created_at: string;
 }
 
@@ -192,3 +194,4 @@ export interface MatchingSettings {
 export type UndoStore = "suppliers" | "priceListItems" | "priceChanges" | "equivalences" | "discontinuedCodes" | "comparisonSessions" | "presentationRules";
 export interface UndoPatch { store: UndoStore; id: string; before: unknown | null; after: unknown | null }
 export interface UndoAction { id: string; sequence: number; label: string; session_id?: string; supplier_id?: string; created_at: string; patches: UndoPatch[] }
+
