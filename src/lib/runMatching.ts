@@ -1,3 +1,4 @@
+import { selectCatalogCandidates, matchSelectedItems } from "./catalogMatching";
 import { buildPrefixCodeIndex } from "./codePrefixes";
 import { presentationReviewReason, supplierPresentationLimits } from "./presentationReview";
 import { priceIssue } from "./pricePolicy";
@@ -16,21 +17,21 @@ import {
   suppliersRepo,
   presentationRulesRepo,
 } from "./db";
-import type { ComparisonSession, PriceListItem, Product } from "@/types/database";
+import type { ComparisonSession, PriceListItem, Product, Equivalence } from "@/types/database";
 
 /** Índices y memoria se cargan una vez por lista. No hay consultas a IndexedDB
  * dentro del loop; identificar y aprobar precios son estados independientes. */
-async function matchInWorker(supplierId: string, items: PriceListItem[], deps: MatchDeps, thresholds: { safeMin: number; reviewMin: number }): Promise<MatchResult[]> {
+async function matchInWorker(supplierId: string, items: PriceListItem[], deps: MatchDeps, products: Product[], equivalences: Equivalence[], discontinued: Set<string>, options: Parameters<typeof selectCatalogCandidates>[4]): Promise<{ matches: MatchResult[]; candidatesByProduct: Record<string, string[]> }> {
   if (typeof Worker === "undefined") {
-    return items.map((item) => matchItem(supplierId, { supplier_code: item.supplier_code, supplier_description: item.supplier_description, supplier_brand: item.supplier_brand, supplier_unit: item.supplier_unit }, deps, thresholds));
+    const selection = selectCatalogCandidates(products, items, equivalences, discontinued, options);
+    return { matches: matchSelectedItems(supplierId, items, deps, selection, options), candidatesByProduct: selection.candidatesByProduct };
   }
   const worker = new Worker(new URL("./matching.worker.ts", import.meta.url), { type: "module" });
   try {
-    const incoming = items.map((item) => ({ supplier_code: item.supplier_code, supplier_description: item.supplier_description, supplier_brand: item.supplier_brand, supplier_unit: item.supplier_unit }));
-    return await new Promise<MatchResult[]>((resolve, reject) => {
-      worker.onmessage = (event: MessageEvent<MatchResult[]>) => resolve(event.data);
-      worker.onerror = (event) => reject(new Error(event.message || "No se pudo ejecutar el motor de comparación."));
-      worker.postMessage({ supplierId, items: incoming, deps, thresholds });
+    return await new Promise((resolve, reject) => {
+      worker.onmessage = event => resolve(event.data);
+      worker.onerror = event => reject(new Error(event.message || "No se pudo ejecutar el motor de comparación."));
+      worker.postMessage({ supplierId, items, deps, products, equivalences, discontinued, options });
     });
   } finally { worker.terminate(); }
 }
@@ -122,13 +123,16 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
 
   const updatedItems: PriceListItem[] = [];
   const changesToCreate: Parameters<typeof priceChangesRepo.bulkCreate>[0] = [];
-  const workerResults = await matchInWorker(supplierId, items, deps, thresholds);
+  const workerResults = await matchInWorker(supplierId, items, deps, activeProducts, equivalencesForSupplier, discontinuedCodes, {
+    ...thresholds, ignorePrefix: supplier?.ignore_et_prefix === true, maxCandidates: rawThresholds.max_candidates ?? 250,
+    enableDescription: rawThresholds.enable_description !== false, enableCodeFamily: rawThresholds.enable_code_family !== false,
+  });
   for (let index = 0; index < items.length; index++) {
     const original = items[index];
     let parsedPrice: number | null = null, parseError: string | null = null;
     try { parsedPrice = parseDecimal(original.raw_price); }
     catch (error) { parseError = error instanceof Error ? error.message : "Precio inválido"; }
-    const result = workerResults[index];
+    const result = workerResults.matches[index];
     const discontinued = discontinuedCodes.has(original.supplier_code);
     const learned = discontinued ? undefined : conversionsByCode.get(original.supplier_code);
     let conversions = learned;
@@ -178,6 +182,7 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
     price_list_id: priceListId,
     status: "open",
     catalog_snapshot: activeProducts,
+    catalog_candidates: workerResults.candidatesByProduct,
     ...summary,
   };
   const db = await getDB();

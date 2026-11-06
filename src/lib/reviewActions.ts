@@ -25,6 +25,8 @@ async function resolve(session: ComparisonSession, item: PriceListItem, action: 
     const current = await tx.objectStore("priceListItems").get(item.id);
     if (!currentSession || !current || currentSession.price_list_id !== current.price_list_id) throw new Error("La comparación ya no está disponible.");
     if (currentSession.status === "closed") throw new Error("Esta comparación está finalizada. Iniciá una nueva actualización.");
+    const confirmedIds = current.matched_presentations?.map(c => c.product_id) ?? (current.match_state === "safe" && current.matched_product_id ? [current.matched_product_id] : []);
+    if (action === "confirm" && confirmedIds.some(id => id !== productId)) throw new Error("Esta fila ya tiene otro artículo propio confirmado. Agregá tu presentación sin quitar las anteriores desde Cantidades / varias presentaciones.");
     const finishUndo = await beginUndoAction(tx, action === "confirm" ? "Vincular artículo" : action === "reject" ? "Rechazar coincidencia" : "Marcar discontinuado", { sessionId: session.id, supplierId: currentSession.supplier_id, itemIds: [item.id], supplierCodes: [current.supplier_code] });
     const catalog = await tx.objectStore("products").index("bySupplier").getAll(currentSession.supplier_id);
     const product = productId ? catalog.find(p => p.id === productId && p.active) : null;

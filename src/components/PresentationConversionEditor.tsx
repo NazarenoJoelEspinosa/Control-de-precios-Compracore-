@@ -6,9 +6,9 @@ import { formatPrice, extractPresentation } from "@/lib/normalize";
 import type { ComparisonSession, PriceListItem, Product } from "@/types/database";
 
 type Entry = { productId: string; supplierQuantity: string; ownQuantity: string };
-export default function PresentationConversionEditor({ session, item, onResolved, saveLabel = "Guardar relación y dejar precios pendientes", onBusyChange }: {
+export default function PresentationConversionEditor({ session, item, onResolved, saveLabel = "Guardar relación y dejar precios pendientes", onBusyChange, preferredProductId }: {
   session: ComparisonSession; item: PriceListItem; onResolved: () => void | Promise<void>;
-  saveLabel?: string; onBusyChange?: (busy: boolean) => void;
+  saveLabel?: string; onBusyChange?: (busy: boolean) => void; preferredProductId?: string;
 }) {
   const [catalog, setCatalog] = useState<Product[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -34,11 +34,14 @@ export default function PresentationConversionEditor({ session, item, onResolved
         const matched = active.find(p => p.id === item.matched_product_id);
         const suggested = matched ? active.filter(p => p.code === matched.code)
           : item.match_state === "presentation_diff" ? active.filter(p => item.candidate_product_ids?.includes(p.id)) : [];
-        setEntries(conversions.length ? conversions.map(c => ({ productId: c.product_id, supplierQuantity: String(c.supplier_quantity), ownQuantity: String(c.own_quantity) })) : suggested.map(p => ({ productId: p.id, supplierQuantity: quantity(item.supplier_description, item.supplier_unit), ownQuantity: quantity(p.description, p.unit) })));
+        const initialEntries = conversions.length ? conversions.map(c => ({ productId: c.product_id, supplierQuantity: String(c.supplier_quantity), ownQuantity: String(c.own_quantity) })) : suggested.map(p => ({ productId: p.id, supplierQuantity: quantity(item.supplier_description, item.supplier_unit), ownQuantity: quantity(p.description, p.unit) }));
+        const preferred = active.find(p => p.id === preferredProductId);
+        if (preferred && !initialEntries.some(e => e.productId === preferred.id)) initialEntries.push({ productId: preferred.id, supplierQuantity: initialEntries[0]?.supplierQuantity ?? quantity(item.supplier_description, item.supplier_unit), ownQuantity: quantity(preferred.description, preferred.unit) });
+        setEntries(initialEntries);
         setLoading(false);
       }).catch(e => { if (!cancelled) { setError(e.message); setLoading(false); } });
     return () => { cancelled = true; };
-  }, [session.supplier_id, item.id]);
+  }, [session.supplier_id, item.id, preferredProductId]);
   function update(index: number, field: "supplierQuantity" | "ownQuantity", value: string) {
     setEntries(rows => rows.map((r, i) => field === "supplierQuantity" || i === index ? { ...r, [field]: value } : r));
   }
@@ -97,3 +100,4 @@ export default function PresentationConversionEditor({ session, item, onResolved
     {error && <p role="alert" className="text-xs text-danger-500">{error}</p>}
   </div>;
 }
+

@@ -124,6 +124,8 @@ export interface ComparisonSession {
   status: "open" | "closed";
   closed_at?: string;
   catalog_snapshot?: Product[];
+  /** Candidatos del proveedor por artículo propio; nunca a la inversa. */
+  catalog_candidates?: Record<string, string[]>;
   created_at: string;
 }
 
