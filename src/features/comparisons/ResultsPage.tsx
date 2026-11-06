@@ -2,7 +2,7 @@ import { closeComparison } from "@/lib/comparisonLifecycle";
 import { updateComparisonLimits } from "@/lib/updateComparisonLimits";
 import { buildGapReasons, type GapReason } from "@/lib/gapReasons";
 import { presentationReviewReason } from "@/lib/presentationReview";
-import { matchesResultFilters, type ResultView, type ReviewKind, type ExtraFilter } from "@/lib/resultFilters";
+import { matchesResultFilters, resultStatus, type ResultView, type ReviewKind, type ExtraFilter } from "@/lib/resultFilters";
 import PresentationReview from "./PresentationReview";
 import { priceIssue } from "@/lib/pricePolicy";
 import { useEffect, useMemo, useState, useRef } from "react";
@@ -20,8 +20,8 @@ import { exportAllResults, exportApprovedOnly, type ExportRow } from "@/lib/expo
 import type { ComparisonSession, PriceListItem, Product } from "@/types/database";
 
 const PRIMARY_VIEWS: { key: ResultView; label: string }[] = [
-  { key: "review", label: "Por revisar" }, { key: "pending", label: "Precios pendientes" },
-  { key: "approved", label: "Aprobados" }, { key: "all", label: "Todos" },
+  { key: "review", label: "Por revisar" }, { key: "pending", label: "Listos para aprobar" },
+  { key: "approved", label: "Aprobados" }, { key: "unchanged", label: "Sin cambios" }, { key: "all", label: "Lista completa" },
 ];
 const EXTRA_FILTERS: { key: ExtraFilter; label: string }[] = [
   { key: "all", label: "Sin filtro adicional" }, { key: "safe", label: "Productos identificados" },
@@ -63,7 +63,7 @@ export default function ResultsPage() {
   const [gapReasons, setGapReasons] = useState<Record<string, GapReason>>({});
   const [catalogTotal, setCatalogTotal] = useState(0);
   const [showCatalogGaps, setShowCatalogGaps] = useState(false);
-  const [view, setView] = useState<ResultView>("all");
+  const [view, setView] = useState<ResultView>("review");
   const [reviewKind, setReviewKind] = useState<ReviewKind>("all");
   const [filter, setFilter] = useState<ExtraFilter>("all");
   const [presentationReview, setPresentationReview] = useState<{ initialItemId?: string } | null>(null);
@@ -76,6 +76,7 @@ export default function ResultsPage() {
   const [restoreEpoch, setRestoreEpoch] = useState(0);
   const [loading, setLoading] = useState(true);
   const [visibleCount, setVisibleCount] = useState(300);
+  const initialViewSession = useRef("");
 
   useEffect(() => {
     if (sessionId) load();
@@ -114,6 +115,10 @@ export default function ResultsPage() {
     });
 
     setRows(merged);
+    if (initialViewSession.current !== sessionData.id) {
+      initialViewSession.current = sessionData.id;
+      setView((["review", "pending", "approved", "unchanged"] as ResultView[]).find(v => merged.some(row => matchesResultFilters(row, v, "all", "all"))) ?? "all");
+    }
 
     // Sentido inverso al de "no encontrados": de TU catálogo para este
     // proveedor, cuáles no aparecieron en absoluto en esta lista. Se deriva
@@ -179,17 +184,17 @@ export default function ResultsPage() {
   // porque no hay nada que decidir ahí — el proveedor tiene un artículo que
   // vos nunca cargaste a tu sistema. Esos se ven en la tarjeta/filtro "No
   // encontrados", no acá.
-  const pendingReviewCount = new Set(rows.filter((r) => ["review", "presentation_diff"].includes(r.item.match_state)).map(r => r.item.id)).size;
+  const pendingReviewCount = new Set(rows.filter((r) => resultStatus(r) === "identification").map(r => r.item.id)).size;
 
   const identifiedOwnCount = new Set(rows.filter(r => r.item.match_state === "safe" && r.product?.active).map(r => r.product!.id)).size;
-  const presentationReviewCount = new Set(rows.filter(r => presentationReviewReason(r.item, r.product, r.change)).map(r => r.item.id)).size;
-  const allReviewCount = new Set(rows.filter(r => matchesResultFilters(r, "review", "all", "all")).map(r => r.item.id)).size;
+  const presentationReviewCount = new Set(rows.filter(r => resultStatus(r) === "presentations").map(r => r.item.id)).size;
 
-  const pendingPrices = filtered.filter(r => r.change && r.change.diff_absolute !== 0 && ["pending", "edited"].includes(r.change.status) && !priceIssue(r.item, r.product) && !presentationReviewReason(r.item, r.product, r.change));
+  const pendingPrices = filtered.filter(r => resultStatus(r) === "pending");
+  const exportableCount = rows.filter(r => resultStatus(r) === "approved").length;
   async function decide(row: ExportRow, status: "approved" | "rejected") {
     if (!row.change) return;
     setActionError(""); setDeciding(true);
-    try { await decidePriceChange(row.change.id, status); await load(true); }
+    try { await decidePriceChange(row.change.id, status); await load(true); return true; }
     catch (error) { setActionError(error instanceof Error ? error.message : "No se pudo decidir el precio"); }
     finally { setDeciding(false); }
   }
@@ -199,6 +204,16 @@ export default function ResultsPage() {
     try { await decidePriceChanges(pendingPrices.map(r => r.change!.id), "approved"); await load(true); }
     catch (error) { setActionError(error instanceof Error ? error.message : "No se pudieron aprobar los precios"); }
     finally { setDeciding(false); }
+  }
+
+  async function downloadResults(kind: "all" | "approved") {
+    if (!session) return;
+    setExporting(kind); setActionError("");
+    try {
+      if (kind === "approved") await exportApprovedOnly(rows, `pricecore-aprobados-${session.id.slice(0, 8)}.xlsx`);
+      else await exportAllResults(rows, `pricecore-resultados-${session.id.slice(0, 8)}.xlsx`);
+    } catch (e) { setActionError(e instanceof Error ? e.message : "No se pudo exportar."); }
+    finally { setExporting(null); }
   }
 
   async function refreshLimits() {
@@ -237,93 +252,25 @@ export default function ResultsPage() {
             {new Date(session.created_at).toLocaleDateString("es-AR")}
           </h1>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {session.status === "open" && <button disabled={deciding || isClosed} onClick={() => void finalize()} className="rounded bg-teal-500 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">Finalizar comparación</button>}
-          {session.status === "open" && presentationReviewCount > 0 && <button disabled={isClosed} onClick={() => setPresentationReview({})} className="rounded bg-amber-600 px-3 py-2 text-sm font-semibold text-white">Revisar presentaciones ({presentationReviewCount})</button>}
-          {session.status === "open" && catalogGaps.length > 0 && (
-            <button
-              disabled={isClosed} onClick={() => setShowCatalogGaps(true)}
-              className="rounded bg-violet-500 px-3 py-2 text-sm font-semibold text-white hover:bg-violet-500/90"
-            >
-              Encontrar los {catalogGaps.length} de mi catálogo
-            </button>
-          )}
-          {session.status === "open" && pendingReviewCount > 0 && (
-            <Link
-              to={`/comparisons/${session.id}/review`}
-              className="rounded border border-steel-200 px-3 py-2 text-sm font-medium text-steel-600 hover:bg-steel-50"
-            >
-              Revisar identificación ({pendingReviewCount})
-            </Link>
-          )}
-          <button
-            onClick={async () => {
-              setExporting("all");
-              await exportAllResults(rows, `pricecore-resultados-${session.id.slice(0, 8)}.xlsx`);
-              setExporting(null);
-            }}
-            disabled={exporting !== null}
-            className="rounded border border-steel-200 px-3 py-2 text-sm font-medium text-steel-600 hover:bg-steel-50 disabled:opacity-60"
-          >
-            {exporting === "all" ? "Generando..." : "Exportar todo"}
-          </button>
-          <button
-            onClick={async () => {
-              setExporting("approved");
-              await exportApprovedOnly(rows, `pricecore-aprobados-${session.id.slice(0, 8)}.xlsx`);
-              setExporting(null);
-            }}
-            disabled={exporting !== null}
-            className="rounded bg-teal-500 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-600 disabled:opacity-60"
-          >
-            {exporting === "approved" ? "Generando..." : "Exportar solo aprobados"}
-          </button>
-          <button
-            onClick={handleDeleteSession}
-            className="rounded border border-danger-500 px-3 py-2 text-sm font-medium text-danger-500 hover:bg-danger-50"
-          >
-            Eliminar
-          </button>
+        <div className="flex flex-wrap items-start gap-2">
+          <button onClick={() => void downloadResults("approved")} disabled={exporting !== null || exportableCount === 0} className="rounded bg-teal-500 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{exporting === "approved" ? "Generando…" : `Exportar ${exportableCount} precios aprobados`}</button>
+          <details className="relative text-sm"><summary className="cursor-pointer rounded border border-steel-200 bg-white px-3 py-2">Más acciones</summary>
+            <div className="absolute right-0 z-20 mt-2 w-64 space-y-2 rounded border border-steel-200 bg-white p-3 shadow-lg">
+              <button onClick={() => void downloadResults("all")} disabled={exporting !== null} className="block w-full rounded px-2 py-2 text-left text-steel-700 hover:bg-steel-50">{exporting === "all" ? "Generando…" : "Exportar lista completa"}</button>
+              {!isClosed && <button disabled={deciding} onClick={() => void finalize()} className="block w-full rounded px-2 py-2 text-left text-teal-600 hover:bg-teal-50">Finalizar comparación</button>}
+              <button onClick={handleDeleteSession} className="block w-full border-t border-steel-100 px-2 py-2 text-left text-danger-500">Eliminar comparación</button>
+            </div>
+          </details>
         </div>
       </div>
 
-      <details className="mb-4 text-xs text-steel-600"><summary className="cursor-pointer">Datos de la lista del proveedor · {session.total_items.toLocaleString("es-AR")} filas</summary><div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-7">
-        <MiniStat label="Filas del proveedor" value={session.total_items} hint="ítems de la lista del proveedor" />
-        <MiniStat label="Productos identificados" value={session.safe_matches} tone="text-success-500" />
-        <MiniStat label="Por revisar" value={allReviewCount} tone="text-amber-600" />
-        <button disabled={isClosed} onClick={() => setPresentationReview({})} className="text-left"><MiniStat
-          label="Presentaciones a revisar" value={presentationReviewCount} tone="text-amber-600"
-          hint="incluye diferencias grandes de precio: suba desde 100% o baja desde 50%, sin relación confirmada" clickable
-        /></button>
-        <MiniStat
-          label="No encontrados"
-          value={session.not_found_items}
-          tone="text-danger-500"
-          hint="de SU lista, sin equivalente en tu catálogo"
-        />
-        <MiniStat label="Discontinuados" value={session.discontinued_items} tone="text-steel-600" />
-        <button disabled={isClosed} onClick={() => setShowCatalogGaps((v) => !v)} className="text-left">
-          <MiniStat
-            label="De tu catálogo, no en su lista"
-            value={catalogGaps.length}
-            tone="text-violet-500"
-            hint={`de ${catalogTotal.toLocaleString("es-AR")} productos tuyos`}
-            clickable
-          />
-        </button>
-      </div></details>
-
-      <section aria-label="Avance de la comparación" className="panel mb-4 p-4">
-        <h2 className="mb-3 text-sm font-semibold">Tu avance</h2>
-        <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
-          <button onClick={() => { setPresentationReview(null); setShowCatalogGaps(false); setView("all"); setFilter("safe"); setSearch(""); setReviewKind("all"); }} className="rounded bg-steel-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{identifiedOwnCount}</strong>artículos propios identificados</button>
-          <button disabled={isClosed} onClick={() => setPresentationReview({})} className="rounded bg-amber-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{presentationReviewCount}</strong>presentaciones por revisar</button>
-          <button disabled={isClosed} onClick={() => { setPresentationReview(null); setShowCatalogGaps(true); }} className="rounded bg-violet-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{catalogGaps.length}</strong>faltantes de mi catálogo</button>
-          <button onClick={() => { setPresentationReview(null); setShowCatalogGaps(false); setView("pending"); setFilter("all"); setSearch(""); }} className="rounded bg-teal-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{rows.filter(r => matchesResultFilters(r, "pending", "all", "all")).length}</strong>precios listos para aprobar</button>
-          <button onClick={() => { setPresentationReview(null); setShowCatalogGaps(false); setView("approved"); setFilter("all"); setSearch(""); }} className="rounded bg-steel-50 p-3 text-left text-xs"><strong className="mono-num block text-xl">{rows.filter(r => matchesResultFilters(r, "approved", "all", "all")).length}</strong>precios aprobados</button>
+      <section aria-label="Avance de identificación" className="panel mb-4 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div><h2 className="text-sm font-semibold">Tu catálogo: <span className="mono-num">{identifiedOwnCount} de {catalogTotal}</span> artículos identificados</h2><p className="mt-1 text-xs text-steel-600">{Math.max(0, catalogTotal - identifiedOwnCount - catalogGaps.length)} con vínculo por confirmar · {catalogGaps.length} sin vínculo. Aprobar precios es otro paso.</p></div>
+          {catalogGaps.length > 0 && <button disabled={isClosed} onClick={() => { setPresentationReview(null); setShowCatalogGaps(true); }} className="rounded border border-violet-200 px-3 py-2 text-xs font-semibold text-violet-500 disabled:opacity-50">Buscar {catalogGaps.length} artículos sin vínculo</button>}
         </div>
-        <div className="mt-3"><label htmlFor="catalog-progress" className="mb-1 block text-xs text-steel-600">Catálogo identificado: {catalogTotal ? Math.round(identifiedOwnCount / catalogTotal * 100) : 0}% · {identifiedOwnCount} de {catalogTotal} artículos propios. Una fila del proveedor puede identificar varias presentaciones.</label><progress id="catalog-progress" max={Math.max(1, catalogTotal)} value={identifiedOwnCount} className="h-2 w-full accent-teal-500" /></div>
-        <details className="mt-2 text-xs text-steel-600"><summary className="cursor-pointer">Límites de los avisos de precio</summary><p className="mt-2">Esta comparación avisa desde +{rows[0]?.item.presentation_limits?.increase ?? 100}% / −{rows[0]?.item.presentation_limits?.decrease ?? 50}%. Podés editar los límites en la ficha del proveedor y aplicarlos aquí.</p><button disabled={deciding || isClosed} onClick={refreshLimits} className="mt-2 rounded border border-steel-200 px-3 py-2 text-teal-600 disabled:opacity-50">Actualizar límites del proveedor</button></details>
+        <progress aria-label="Artículos propios identificados" max={Math.max(1, catalogTotal)} value={identifiedOwnCount} className="mt-3 h-2 w-full accent-teal-500" />
+        <details className="mt-2 text-xs text-steel-600"><summary className="cursor-pointer">¿Por qué identificados y aprobados son distintos?</summary><p className="mt-2">Los identificados cuentan artículos propios únicos. Abajo se cuentan resultados de precios: algunos necesitan revisar cantidades, otros esperan aprobación y otros no cambiaron. Un artículo puede tener varias filas o presentaciones en la lista del proveedor. Los artículos sin vínculo se revisan aparte.</p></details>
       </section>
 
       {!isClosed && presentationReview ? (
@@ -347,7 +294,7 @@ export default function ResultsPage() {
           {PRIMARY_VIEWS.map(f => <button key={f.key} aria-pressed={view === f.key} onClick={() => { setView(f.key); setFilter("all"); setReviewKind("all"); }} className={clsx("rounded px-3 py-2 text-sm font-medium", view === f.key ? "bg-teal-500 text-white" : "bg-steel-50 text-steel-600 hover:bg-steel-100")}>{f.label} <span className="mono-num ml-1 text-xs">{rows.filter(row => matchesResultFilters(row, f.key, "all", "all")).length}</span></button>)}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-        {view === "review" && <label className="text-xs text-steel-600">Tipo de revisión <select aria-label="Tipo de revisión" value={reviewKind} onChange={e => setReviewKind(e.target.value as ReviewKind)} className="field-control ml-1"><option value="all">Todos los motivos</option><option value="presentations">Presentaciones</option><option value="identification">Identificación del producto</option><option value="price">Errores de precio / moneda</option></select></label>}
+        {view === "review" && <div className="flex flex-wrap gap-1" role="group" aria-label="Motivo de revisión">{([{ key: "all", label: "Todo" }, { key: "identification", label: "Identificar" }, { key: "presentations", label: "Presentación" }, { key: "price", label: "Precio / moneda" }] as { key: ReviewKind; label: string }[]).map(k => <button key={k.key} aria-pressed={reviewKind === k.key} onClick={() => setReviewKind(k.key)} className={clsx("rounded px-2 py-1 text-xs", reviewKind === k.key ? "bg-amber-50 font-semibold text-amber-600" : "text-steel-600 hover:bg-steel-50")}>{k.label} · {rows.filter(row => matchesResultFilters(row, "review", k.key, "all")).length}</button>)}</div>}
         <select
           value={sort}
           onChange={(e) => setSort(e.target.value as SortKey)}
@@ -366,14 +313,16 @@ export default function ResultsPage() {
           className="rounded border border-steel-200 px-3 py-1.5 text-sm focus:border-teal-500"
         />
         </div>
-        <details className="text-xs text-steel-600"><summary className="cursor-pointer">Más filtros{filter !== "all" ? " · 1 activo" : ""}</summary>
+        <details className="text-xs text-steel-600"><summary className="cursor-pointer">Filtros adicionales{filter !== "all" ? " · 1 activo" : ""}</summary>
           <div className="mt-2 flex flex-wrap items-center gap-2"><select aria-label="Filtro adicional" value={filter} onChange={e => setFilter(e.target.value as ExtraFilter)} className="field-control max-w-full">{EXTRA_FILTERS.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}</select>{filter !== "all" && <button onClick={() => setFilter("all")} className="text-teal-600">Quitar filtro adicional</button>}<span>Se combina con la pestaña y la búsqueda actuales.</span></div>
         </details>
-        {view === "review" && reviewKind === "presentations" && <button disabled={isClosed} onClick={() => setPresentationReview({})} className="rounded bg-amber-600 px-3 py-2 text-xs font-semibold text-white">Abrir revisión continua de presentaciones</button>}
+        {view === "review" && reviewKind === "presentations" && presentationReviewCount > 0 && <button disabled={isClosed} onClick={() => setPresentationReview({})} className="rounded bg-amber-600 px-3 py-2 text-xs font-semibold text-white">Revisar presentaciones una por una</button>}
+        {view === "review" && reviewKind === "identification" && pendingReviewCount > 0 && !isClosed && <Link to={`/comparisons/${session.id}/review`} className="inline-block rounded bg-amber-600 px-3 py-2 text-xs font-semibold text-white">Identificar uno por uno</Link>}
+        <details className="text-xs text-steel-600"><summary className="cursor-pointer">Datos del proveedor y configuración</summary><p className="mt-2">Lista original: {session.total_items.toLocaleString("es-AR")} filas. «Lista completa» incluye artículos que no vendés. Un resultado puede representar una presentación propia de esa fila.</p><p className="mt-2">Avisos desde +{rows[0]?.item.presentation_limits?.increase ?? 100}% / −{rows[0]?.item.presentation_limits?.decrease ?? 50}%, sin cantidades confirmadas.</p><button disabled={deciding || isClosed} onClick={refreshLimits} className="mt-2 rounded border border-steel-200 px-3 py-2 text-teal-600 disabled:opacity-50">Actualizar límites del proveedor</button></details>
       </div>
 
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs text-steel-600">Las coincidencias cuentan filas del proveedor. Los precios cuentan tus artículos, incluidas sus presentaciones.</p>
+        <p className="text-xs text-steel-600">Los contadores de estas pestañas cuentan resultados de precios, no artículos propios únicos. «Sin cambios» no necesita aprobación.</p>
         {session.status === "open" && pendingPrices.length > 0 && <button disabled={deciding || isClosed} onClick={approveFiltered} className="rounded bg-success-500 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">Aprobar {pendingPrices.length} precios filtrados</button>}
       </div>
       {(filter === "increased" || filter === "decreased") && (
@@ -392,7 +341,6 @@ export default function ResultsPage() {
               <th className="px-3 py-2">Precio anterior</th>
               <th className="px-3 py-2">Precio nuevo</th>
               <th className="px-3 py-2">Cambio</th>
-              <th className="px-3 py-2">Match</th>
               <th className="px-3 py-2">Estado</th>
               <th className="px-3 py-2"></th>
             </tr>
@@ -414,45 +362,13 @@ export default function ResultsPage() {
                 <td className="px-3 py-2">
                   <PriceDeltaBadge percent={row.change?.diff_percent ?? null} />
                 </td>
-                <td className="mono-num px-3 py-2 text-steel-600">
-                  {row.item.match_score !== null ? `${row.item.match_score.toFixed(0)}%` : "—"}
-                </td>
-                <td className="px-3 py-2">
-                  <div className="space-y-1">
-                    <MatchStateBadge state={row.item.match_state} />
-                    {row.item.review_reason && ["review", "presentation_diff", "not_found"].includes(row.item.match_state) && <p className="max-w-xs text-xs text-steel-600">{row.item.review_reason}</p>}
-                    {presentationReviewReason(row.item, row.product, row.change) && <p className="max-w-xs text-xs font-semibold text-amber-600">Revisar presentación</p>}
-                    {priceIssue(row.item, row.product) ? <p className="max-w-xs text-xs font-medium text-danger-500">{priceIssue(row.item, row.product)}</p> : presentationReviewReason(row.item, row.product, row.change) ? <span className="block text-xs text-steel-600">Precio sin confirmar</span> : row.change?.diff_absolute === 0 ? <span className="block text-xs text-steel-600">Sin cambio de precio</span> : row.change ? <ChangeStatusBadge status={row.change.status} /> : row.product && row.item.match_state === "safe" ? <span className="block text-xs text-steel-600">Sin cambio de precio</span> : null}
-                  </div>
-                </td>
+                <td className="px-3 py-2"><ResultStatusBadge row={row} /></td>
                 <td className="px-3 py-2 text-right">
-                  <div className="flex justify-end gap-1">
-                    {session.status === "open" && row.change && row.change.status !== "rejected" && (
-                      <button
-                        disabled={deciding || isClosed}
-                        onClick={() => decide(row, "rejected")}
-                        className="rounded bg-danger-50 px-2 py-1 text-xs font-medium text-danger-500 hover:bg-danger-500 hover:text-white"
-                      >
-                        Rechazar
-                      </button>
-                    )}
-                    {session.status === "open" && row.change && row.change.diff_absolute !== 0 && ["pending", "edited"].includes(row.change.status) && !priceIssue(row.item, row.product) && !presentationReviewReason(row.item, row.product, row.change) && <button disabled={deciding || isClosed} onClick={() => decide(row, "approved")} className="rounded bg-success-500 px-2 py-1 text-xs font-medium text-white">Aprobar precio</button>}
-                    {session.status === "open" && row.change && row.change.status === "rejected" && !priceIssue(row.item, row.product) && !presentationReviewReason(row.item, row.product, row.change) && (
-                      <button
-                        onClick={() => decide(row, "approved")}
-                        className="rounded bg-steel-100 px-2 py-1 text-xs font-medium text-steel-600 hover:bg-steel-200"
-                      >
-                        Aprobar precio
-                      </button>
-                    )}
-                    {session.status === "open" && (row.product || row.item.match_state === "presentation_diff") && <button onClick={() => setPresentationReview({ initialItemId: row.item.id })} className="rounded bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-600">{presentationReviewReason(row.item, row.product, row.change) ? "Revisar presentación" : "Enseñar presentación"}</button>}
-                    <button
-                      onClick={() => setSelected(row)}
-                      className="rounded px-2 py-1 text-xs font-medium text-steel-600 hover:bg-steel-100"
-                    >
-                      Revisar detalle
-                    </button>
+                  <div className="flex flex-wrap justify-end gap-1">
+                    {!isClosed && resultStatus(row) === "pending" && <button disabled={deciding} onClick={() => decide(row, "approved")} className="rounded bg-success-500 px-2 py-1 text-xs font-semibold text-white">Aprobar precio</button>}
+                    {!isClosed && resultStatus(row) === "presentations" ? <button onClick={() => setPresentationReview({ initialItemId: row.item.id })} className="rounded bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-600">Revisar cantidades</button> : <button onClick={() => setSelected(row)} className="rounded px-2 py-1 text-xs font-medium text-teal-600 hover:bg-steel-50">{!isClosed && resultStatus(row) === "identification" ? "Identificar" : "Ver detalle"}</button>}
                   </div>
+
                 </td>
               </tr>
             ))}
@@ -477,6 +393,8 @@ export default function ResultsPage() {
           session={session}
           row={selected}
           onClose={() => setSelected(null)}
+          onPriceDecision={status => { void decide(selected, status).then(ok => { if (ok) setSelected(null); }); }}
+          deciding={deciding}
           onResolved={() => {
             setSelected(null);
             load(true);
@@ -485,6 +403,13 @@ export default function ResultsPage() {
       )}
     </div>
   );
+}
+
+function ResultStatusBadge({ row }: { row: ExportRow }) {
+  const status = resultStatus(row);
+  const labels = { identification: "Identidad pendiente", presentations: "Cantidades pendientes", price: "Precio / moneda con error", pending: "Listo para aprobar", approved: "Precio aprobado", unchanged: "Sin cambio de precio", rejected: "Precio rechazado", outside: row.item.match_state === "discontinued" ? "Discontinuado" : "Sin vínculo confirmado" };
+  const tone = status === "approved" ? "bg-success-50 text-success-500" : ["identification", "presentations", "price"].includes(status) ? "bg-amber-50 text-amber-600" : status === "pending" ? "bg-teal-50 text-teal-600" : "bg-steel-50 text-steel-600";
+  return <span className={clsx("inline-block rounded px-2 py-1 text-xs font-medium", tone)}>{labels[status]}</span>;
 }
 
 function priceOf(row: ExportRow): number | null {
@@ -496,40 +421,20 @@ function nameOf(row: ExportRow): string {
   return row.product?.description ?? row.item.supplier_description;
 }
 
-function MiniStat({
-  label,
-  value,
-  tone,
-  hint,
-  clickable,
-}: {
-  label: string;
-  value: number;
-  tone?: string;
-  hint?: string;
-  clickable?: boolean;
-}) {
-  return (
-    <div className={clsx("panel p-3", clickable && "cursor-pointer transition hover:border-teal-500")} title={hint}>
-      <p className="text-xs text-steel-600">
-        {label}
-        {hint && <span className="ml-1 text-steel-600">ⓘ</span>}
-      </p>
-      <p className={clsx("mono-num text-xl font-semibold", tone ?? "text-ink")}>{value.toLocaleString("es-AR")}</p>
-    </div>
-  );
-}
-
 function ProductDrawer({
   session,
   row,
   onClose,
   onResolved,
+  onPriceDecision,
+  deciding,
 }: {
   session: ComparisonSession;
   row: ExportRow;
   onClose: () => void;
   onResolved: () => void;
+  onPriceDecision: (status: "approved" | "rejected") => void;
+  deciding: boolean;
 }) {
   const drawerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -589,6 +494,7 @@ function ProductDrawer({
           </Section>
         )}
 
+        {session.status === "open" && row.change && <div className="mb-4 flex gap-2">{resultStatus(row) === "pending" && <button disabled={deciding} onClick={() => onPriceDecision("approved")} className="rounded bg-success-500 px-3 py-2 text-xs text-white">Aprobar precio</button>}{row.change.status !== "rejected" && <button disabled={deciding} onClick={() => onPriceDecision("rejected")} className="rounded bg-danger-50 px-3 py-2 text-xs text-danger-500">Rechazar precio</button>}{row.change.status === "rejected" && !priceIssue(row.item, row.product) && !presentationReviewReason(row.item, row.product, row.change) && <button disabled={deciding} onClick={() => onPriceDecision("approved")} className="rounded bg-success-500 px-3 py-2 text-xs text-white">Volver a aprobar</button>}</div>}
         {session.status === "open" && !needsResolution && <PresentationConversionEditor session={session} item={row.item} onResolved={onResolved} />}
 
         {session.status === "open" && needsResolution && (
