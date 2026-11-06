@@ -1,8 +1,6 @@
-import { prepareCatalogImport } from "@/lib/catalogImport";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { getDB, productsRepo, suppliersRepo, type DuplicateCodeInFile } from "@/lib/db";
-import { parseSpreadsheetFile, type ParsedFile } from "@/lib/fileParsing";
-import { suggestColumnMapping, type ColumnMapping } from "@/lib/columnMapping";
+import ImportCatalogForm from "./ImportCatalogForm";
+import { useEffect, useState, type FormEvent } from "react";
+import { getDB, productsRepo, suppliersRepo } from "@/lib/db";
 import { formatPrice, parseDecimal } from "@/lib/normalize";
 import type { Product, Supplier } from "@/types/database";
 
@@ -22,8 +20,8 @@ export default function CatalogPage() {
     setLoading(true);
     const [supplierList, allProducts] = await Promise.all([suppliersRepo.list(), productsRepo.list()]);
     const byCount = new Map<string, number>();
-    for (const p of allProducts) byCount.set(p.supplier_id, (byCount.get(p.supplier_id) ?? 0) + 1);
-    setSuppliers(supplierList.sort((a, b) => a.name.localeCompare(b.name)));
+    for (const p of allProducts) if (p.active) byCount.set(p.supplier_id, (byCount.get(p.supplier_id) ?? 0) + 1);
+    setSuppliers(supplierList.filter(s => s.active && !s.deleted_at).sort((a, b) => a.name.localeCompare(b.name)));
     setCounts(byCount);
     setLoading(false);
   }
@@ -101,7 +99,7 @@ function SupplierCatalogFolder({ supplier, onBack }: { supplier: Supplier; onBac
 
   async function load() {
     const all = await productsRepo.listBySupplier(supplier.id);
-    setProducts(all.sort((a, b) => a.description.localeCompare(b.description)));
+    setProducts(all.filter(p => p.active).sort((a, b) => a.description.localeCompare(b.description)));
     setLoading(false);
   }
 
@@ -372,128 +370,3 @@ function EditProductForm({ product, onClose, onSaved }: { product: Product; onCl
   );
 }
 
-function ImportCatalogForm({ supplierId, onDone }: { supplierId: string; onDone: () => void }) {
-  const [parsed, setParsed] = useState<ParsedFile | null>(null);
-  const [mapping, setMapping] = useState<ColumnMapping>({});
-  const [importing, setImporting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [fallbackCurrency, setFallbackCurrency] = useState<"ARS" | "USD">("ARS");
-  useEffect(() => { suppliersRepo.get(supplierId).then(s => setFallbackCurrency(s?.default_currency ?? "ARS")); }, [supplierId]);
-  const [duplicates, setDuplicates] = useState<DuplicateCodeInFile[] | null>(null);
-
-  async function handleFile(file: File) {
-    const p = await parseSpreadsheetFile(file);
-    setParsed(p);
-    setMapping(suggestColumnMapping(p.headers));
-    setDuplicates(null);
-  }
-
-  const { products, errors: rowErrors, skipped } = useMemo(() =>
-    prepareCatalogImport(parsed?.rows ?? [], mapping, fallbackCurrency), [parsed, mapping, fallbackCurrency]);
-
-  async function handleImport() {
-    if (!parsed || rowErrors.length) return;
-    setImporting(true);
-    setError(null);
-    try {
-      const { duplicatesInFile } = await productsRepo.bulkUpsertByCode(supplierId, products);
-      setDuplicates(duplicatesInFile);
-      if (duplicatesInFile.length === 0) {
-        onDone();
-      }
-      // Si hubo duplicados, la importación ya se guardó (con la última fila
-      // de cada código repetido) — dejamos el aviso visible en vez de cerrar
-      // el formulario solo, para que el usuario revise el archivo de origen.
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo importar el archivo.");
-    } finally {
-      setImporting(false);
-    }
-  }
-
-  const requiredOk = mapping.code && mapping.description && mapping.price;
-
-  return (
-    <div className="panel mb-6 space-y-4 p-5">
-      <p className="text-sm text-steel-600">
-        Subí la exportación de este proveedor (código, descripción, precio). Los productos que ya existan por código
-        <strong> dentro de esta carpeta</strong> se actualizan; los que no existan se agregan. No afecta el catálogo
-        de otros proveedores.
-      </p>
-      {error && <p role="alert" className="text-sm text-danger-500">{error}</p>}
-      {!parsed ? (
-        <label className="flex cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-steel-200 px-6 py-8 text-center hover:border-teal-500">
-          <input
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) handleFile(f).catch(e => setError(e instanceof Error ? e.message : "No se pudo leer el archivo"));
-            }}
-          />
-          <span className="text-sm font-medium text-ink">Hacé click para elegir un archivo</span>
-        </label>
-      ) : (
-        <>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            {(["code", "description", "price", "unit", "currency"] as const).map((field) => (
-              <div key={field}>
-                <label className="mb-1 block text-xs font-medium text-steel-800">
-                  {{ code: "Código", description: "Descripción", price: "Precio", unit: "Unidad", currency: "Moneda" }[field]}
-                  {field !== "unit" && field !== "currency" && <span className="text-danger-500"> *</span>}
-                </label>
-                <select
-                  value={mapping[field] ?? ""}
-                  onChange={(e) => setMapping({ ...mapping, [field]: e.target.value || undefined })}
-                  className="w-full rounded border border-steel-200 px-2 py-1.5 text-sm focus:border-teal-500"
-                >
-                  <option value="">— no mapear —</option>
-                  {parsed.headers.map((h) => (
-                    <option key={h} value={h}>
-                      {h}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ))}
-          </div>
-          <label className="block text-sm">Moneda si no hay columna de moneda<select value={fallbackCurrency} onChange={e => setFallbackCurrency(e.target.value as "ARS" | "USD")} className="field-control ml-2"><option value="ARS">ARS</option><option value="USD">USD</option></select></label>
-          {!!rowErrors.length && <div role="alert" className="rounded bg-danger-50 p-3 text-sm text-danger-500"><p>Corregí estas filas antes de importar. No se reemplazan precios inválidos por cero.</p><ul className="mt-2 list-inside list-disc">{rowErrors.slice(0, 10).map((message, i) => <li key={i}>{message}</li>)}</ul>{rowErrors.length > 10 && <p>Y {rowErrors.length - 10} filas más.</p>}</div>}
-          {!!skipped && <p className="text-xs text-steel-600">Se omiten {skipped} filas sin código.</p>}
-          {duplicates && duplicates.length > 0 && (
-            <div className="rounded border border-amber-400 bg-amber-50 p-3 text-sm text-amber-600">
-              <p className="font-medium">
-                El archivo tiene {duplicates.length} combinación(es) de código y presentación repetidas. Se conservó la última fila de cada combinación:
-              </p>
-              <ul className="mt-1 list-inside list-disc">
-                {duplicates.slice(0, 20).map((d, index) => (
-                  <li key={`${d.code}-${index}`} className="mono-num">
-                    {d.code} — aparece {d.count} veces
-                  </li>
-                ))}
-                {duplicates.length > 20 && <li>...y {duplicates.length - 20} más.</li>}
-              </ul>
-              <p className="mt-2">Revisá el archivo de origen si no era lo esperado.</p>
-              <button
-                onClick={onDone}
-                className="mt-3 rounded bg-teal-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-600"
-              >
-                Entendido, listo
-              </button>
-            </div>
-          )}
-          {!duplicates && (
-            <button
-              disabled={!requiredOk || importing || rowErrors.length > 0 || !products.length}
-              onClick={handleImport}
-              className="rounded bg-teal-500 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-600 disabled:opacity-40"
-            >
-              {importing ? "Importando..." : `Importar ${products.length} productos`}
-            </button>
-          )}
-        </>
-      )}
-    </div>
-  );
-}

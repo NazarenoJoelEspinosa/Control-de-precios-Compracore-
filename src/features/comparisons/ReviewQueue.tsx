@@ -72,6 +72,8 @@ export default function ReviewQueue() {
   if (loading) return <p className="text-sm text-steel-600">Cargando...</p>;
   if (!session) return <p className="text-sm text-danger-500">No se encontró la sesión.</p>;
 
+  if (session.status === "closed") return <p>Esta comparación está finalizada. <Link className="text-teal-600 underline" to={`/comparisons/${session.id}`}>Ver resultados</Link></p>;
+
   if (items.length === 0) {
     return (
       <div className="mx-auto max-w-lg text-center">
@@ -164,3 +166,4 @@ export default function ReviewQueue() {
     </div>
   );
 }
+

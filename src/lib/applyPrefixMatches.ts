@@ -15,6 +15,7 @@ export async function applyPrefixMatches(sessionId: string): Promise<{ linked: n
   try {
     const session = await tx.objectStore("comparisonSessions").get(sessionId);
     if (!session) throw new Error("La comparación ya no está disponible.");
+    if (session.status === "closed") throw new Error("Esta comparación está finalizada.");
     const supplier = await tx.objectStore("suppliers").get(session.supplier_id);
     if (supplier?.ignore_et_prefix !== true) throw new Error("Activá la regla ET- para este proveedor antes de aplicarla.");
     const [catalog, items, changes, equivalences, discontinued] = await Promise.all([
@@ -80,3 +81,4 @@ export async function applyPrefixMatches(sessionId: string): Promise<{ linked: n
     throw error;
   }
 }
+

@@ -1,3 +1,4 @@
+import { deleteSupplierPermanently } from "@/lib/supplierLifecycle";
 import React, { useEffect, useMemo, useState, type FormEvent } from "react";
 import { productsRepo, suppliersRepo } from "@/lib/db";
 import type { Supplier } from "@/types/database";
@@ -13,6 +14,8 @@ export default function SuppliersPage() {
     const [editing, setEditing] = useState<Supplier | null>(null);
     const [creating, setCreating] = useState(false);
     const [loading, setLoading] = useState(true);
+    const [actionError, setActionError] = useState("");
+    const [deleting, setDeleting] = useState(false);
     async function load() { setLoading(true); setSuppliers(await suppliersRepo.list()); setLoading(false); }
     useEffect(() => { load(); window.addEventListener("pricecore:restored", load); return () => window.removeEventListener("pricecore:restored", load); }, []);
     const visible = useMemo(() => suppliers
@@ -25,28 +28,38 @@ export default function SuppliersPage() {
         await suppliersRepo.archive(s.id);
         await load();
     }
+    async function purge(s: Supplier) {
+        if (deleting || !window.confirm(`¿Eliminar definitivamente "${s.name}"? Se borrarán su catálogo, comparaciones, equivalencias, presentaciones aprendidas y configuración. No se puede deshacer.`)) return;
+        setDeleting(true); setActionError("");
+        try { await deleteSupplierPermanently(s.id); await load(); }
+        catch (e) { setActionError(e instanceof Error ? e.message : "No se pudo eliminar el proveedor."); }
+        finally { setDeleting(false); }
+    }
     async function restore(s: Supplier) { await suppliersRepo.restore(s.id); await load(); }
     return <div className="mx-auto max-w-5xl">
     <div className="mb-6 flex items-center justify-between gap-4">
       <div><p className="eyebrow">Organización</p><h1 className="font-display text-2xl font-semibold text-ink">Proveedores</h1><p className="mt-1 text-sm text-steel-600">Cada proveedor es una carpeta: catálogo, notas, columnas y reglas viven juntos.</p></div>
       <button onClick={() => setCreating(true)} className="rounded bg-teal-500 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-600">+ Nuevo proveedor</button>
     </div>
+    {actionError && <p role="alert" className="mb-3 text-sm text-danger-500">{actionError}</p>}
     <div className="mb-4 flex flex-wrap items-center gap-2">
       <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar proveedor..." className="w-full max-w-sm rounded border border-steel-200 bg-white px-3 py-2 text-sm focus:border-teal-500"/>
       <button onClick={() => setShowTrash(v => !v)} className={`rounded border px-3 py-2 text-sm ${showTrash ? "border-amber-400 bg-amber-50 text-amber-700" : "border-steel-200 text-steel-600 hover:bg-steel-50"}`}>{showTrash ? "← Proveedores activos" : "🗑 Papelera"}</button>
     </div>
     {loading ? <p className="text-sm text-steel-600">Cargando...</p> : visible.length === 0 ? <div className="panel p-8 text-center text-sm text-steel-600">{showTrash ? "La papelera está vacía." : "Todavía no cargaste proveedores."}</div> :
             <div className="grid gap-3 md:grid-cols-2">
-        {visible.map(s => <SupplierCard key={s.id} supplier={s} onEdit={() => setEditing(s)} onArchive={() => archive(s)} onRestore={() => restore(s)}/>)}
+        {visible.map(s => <SupplierCard key={s.id} supplier={s} onEdit={() => setEditing(s)} onArchive={() => archive(s)} onRestore={() => restore(s)} onDelete={() => void purge(s)} deleting={deleting}/>)}
       </div>}
     {(creating || editing) && <SupplierEditor supplier={editing} onClose={() => { setCreating(false); setEditing(null); }} onSaved={() => { setCreating(false); setEditing(null); load(); }}/>}
   </div>;
 }
-function SupplierCard({ supplier: s, onEdit, onArchive, onRestore }: {
+function SupplierCard({ supplier: s, onEdit, onArchive, onRestore, onDelete, deleting }: {
     supplier: Supplier;
     onEdit: () => void;
     onArchive: () => void;
     onRestore: () => void;
+    onDelete: () => void;
+    deleting: boolean;
 }) {
     const [count, setCount] = useState<number | null>(null);
     useEffect(() => { productsRepo.listBySupplier(s.id).then(p => setCount(p.length)); }, [s.id]);
@@ -56,7 +69,7 @@ function SupplierCard({ supplier: s, onEdit, onArchive, onRestore }: {
       <span className={`rounded-full px-2 py-1 text-[11px] ${s.deleted_at ? "bg-steel-100 text-steel-500" : s.active ? "bg-teal-50 text-teal-700" : "bg-amber-50 text-amber-700"}`}>{s.deleted_at ? "Papelera" : s.active ? "Activo" : "Inactivo"}</span>
     </div>
     <div className="mt-3 flex flex-wrap gap-1">{(s.categories ?? []).slice(0, 4).map(c => <span key={c} className="rounded bg-steel-50 px-2 py-1 text-[11px] text-steel-600">{c}</span>)}</div>
-    <div className="mt-4 flex items-center justify-between border-t border-steel-100 pt-3"><span className="text-xs text-steel-500">{s.email || s.phone ? `${s.email ? "Mail" : "Teléfono"}${s.email && s.phone ? " · Teléfono" : ""}` : "Sin contacto cargado"}</span><div className="flex gap-3"><button onClick={onEdit} className="text-xs font-medium text-teal-600 hover:underline">Editar</button>{s.deleted_at ? <button onClick={onRestore} className="text-xs text-teal-600 hover:underline">Restaurar</button> : <button onClick={onArchive} className="text-xs text-danger-500 hover:underline">Papelera</button>}</div></div>
+    <div className="mt-4 flex items-center justify-between border-t border-steel-100 pt-3"><span className="text-xs text-steel-500">{s.email || s.phone ? `${s.email ? "Mail" : "Teléfono"}${s.email && s.phone ? " · Teléfono" : ""}` : "Sin contacto cargado"}</span><div className="flex gap-3"><button onClick={onEdit} className="text-xs font-medium text-teal-600 hover:underline">Editar</button>{s.deleted_at && <button disabled={deleting} onClick={onDelete} className="text-xs text-danger-500 hover:underline disabled:opacity-50">Eliminar definitivamente</button>}{s.deleted_at ? <button onClick={onRestore} className="text-xs text-teal-600 hover:underline">Restaurar</button> : <button onClick={onArchive} className="text-xs text-danger-500 hover:underline">Papelera</button>}</div></div>
   </div>;
 }
 function SupplierEditor({ supplier, onClose, onSaved }: {
@@ -112,3 +125,4 @@ function Field({ label, children }: {
     label: string;
     children: React.ReactNode;
 }) { return <div><label className="mb-1 block text-xs font-semibold text-steel-700">{label}</label>{React.cloneElement(children as React.ReactElement, { className: "w-full rounded border border-steel-200 bg-white px-3 py-2 text-sm focus:border-teal-500 " + ((children as React.ReactElement).props.className ?? "") })}</div>; }
+

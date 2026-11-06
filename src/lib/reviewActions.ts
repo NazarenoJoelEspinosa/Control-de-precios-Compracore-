@@ -24,6 +24,7 @@ async function resolve(session: ComparisonSession, item: PriceListItem, action: 
     const currentSession = await tx.objectStore("comparisonSessions").get(session.id);
     const current = await tx.objectStore("priceListItems").get(item.id);
     if (!currentSession || !current || currentSession.price_list_id !== current.price_list_id) throw new Error("La comparación ya no está disponible.");
+    if (currentSession.status === "closed") throw new Error("Esta comparación está finalizada. Iniciá una nueva actualización.");
     const finishUndo = await beginUndoAction(tx, action === "confirm" ? "Vincular artículo" : action === "reject" ? "Rechazar coincidencia" : "Marcar discontinuado", { sessionId: session.id, supplierId: currentSession.supplier_id, itemIds: [item.id], supplierCodes: [current.supplier_code] });
     const catalog = await tx.objectStore("products").index("bySupplier").getAll(currentSession.supplier_id);
     const product = productId ? catalog.find(p => p.id === productId && p.active) : null;
@@ -82,6 +83,7 @@ export async function decidePriceChanges(changeIds: string[], status: "approved"
     if (sessionIds.size !== 1) throw new Error("Elegí cambios de una sola comparación.");
     const session = await tx.objectStore("comparisonSessions").get(selected[0]!.comparison_session_id);
     if (!session) throw new Error("La comparación ya no existe.");
+    if (session.status === "closed") throw new Error("Esta comparación está finalizada.");
     const finishUndo = await beginUndoAction(tx, `${status === "approved" ? "Aprobar" : "Rechazar"} ${selected.length} precio(s)`, { sessionId: session.id, supplierId: session.supplier_id, itemIds: selected.map(c => c!.price_list_item_id) });
     const [items, products] = await Promise.all([
       tx.objectStore("priceListItems").index("byPriceList").getAll(session.price_list_id),
@@ -108,3 +110,4 @@ export async function decidePriceChanges(changeIds: string[], status: "approved"
     await tx.done.catch(() => undefined); throw error;
   }
 }
+
