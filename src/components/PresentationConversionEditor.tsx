@@ -42,8 +42,8 @@ export default function PresentationConversionEditor({ session, item, onResolved
       }).catch(e => { if (!cancelled) { setError(e.message); setLoading(false); } });
     return () => { cancelled = true; };
   }, [session.supplier_id, item.id, preferredProductId]);
-  function update(index: number, field: "supplierQuantity" | "ownQuantity", value: string) {
-    setEntries(rows => rows.map((r, i) => field === "supplierQuantity" || i === index ? { ...r, [field]: value } : r));
+  function update(productId: string, field: "supplierQuantity" | "ownQuantity", value: string) {
+    setEntries(rows => rows.map(r => r.productId === productId ? { ...r, [field]: value } : r));
   }
   function quantityLabel(product: Product | undefined, index: number) {
     if (!product) return String(index);
@@ -65,7 +65,7 @@ export default function PresentationConversionEditor({ session, item, onResolved
   return <div className="space-y-3 rounded border border-teal-500 bg-teal-50 p-3">
     <p className="text-sm font-semibold text-ink">Enseñar mis presentaciones</p>
     <p className="text-xs text-steel-600">Revisá las cantidades de cada presentación. Una fila del proveedor puede corresponder a varios artículos propios. Si la presentación es la misma y el aumento es real, confirmá 1 → 1.</p>
-    <p className="text-xs text-steel-600">La cantidad del proveedor es común: cambiarla en una fila actualiza las demás. Cada artículo propio conserva su cantidad.</p>
+    <p className="text-xs text-steel-600">Cada presentación tiene sus propias cantidades. Cambiar una fila no modifica las demás; usá la misma unidad base dentro de cada relación.</p>
     <details className="text-xs text-steel-600"><summary className="cursor-pointer">Cómo se calcula y se recuerda</summary><p className="mt-2">Precio proveedor × cantidad propia ÷ cantidad proveedor. Las cantidades detectadas en el texto son un punto de partida. Guardar recuerda la relación para este proveedor y recalcula esta comparación. Los precios quedan pendientes de aprobación. Podés agregar otras presentaciones del mismo artículo.</p></details>
     {loading ? <p className="text-xs">Cargando catálogo…</p> : <>
       {entries.map((entry, index) => {
@@ -76,8 +76,8 @@ export default function PresentationConversionEditor({ session, item, onResolved
           <p className="text-xs font-semibold">{product ? `${product.code} — ${product.description} (${product.unit || "sin unidad"})` : "Artículo ya no disponible: quitá esta relación"}</p>
           <p className="text-xs text-steel-600">Precio original del proveedor: {item.parsed_price !== null ? formatPrice(item.parsed_price, item.supplier_currency ?? product?.currency) : item.raw_price}</p>
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="text-xs">El precio del proveedor corresponde a<input aria-label={`Cantidad proveedor ${quantityLabel(product, index)}`} disabled={saving} type="number" min="0" step="any" value={entry.supplierQuantity} onChange={e => update(index, "supplierQuantity", e.target.value)} className="mt-1 w-full rounded border px-2 py-1" /></label>
-            <label className="text-xs">Mi artículo corresponde a<input aria-label={`Cantidad propia ${quantityLabel(product, index)}`} disabled={saving} type="number" min="0" step="any" value={entry.ownQuantity} onChange={e => update(index, "ownQuantity", e.target.value)} className="mt-1 w-full rounded border px-2 py-1" /></label>
+            <label className="text-xs">El precio del proveedor corresponde a<input aria-label={`Cantidad proveedor ${quantityLabel(product, index)}`} disabled={saving} type="number" min="0" step="any" value={entry.supplierQuantity} onChange={e => update(entry.productId, "supplierQuantity", e.target.value)} className="mt-1 w-full rounded border px-2 py-1" /></label>
+            <label className="text-xs">Mi artículo corresponde a<input aria-label={`Cantidad propia ${quantityLabel(product, index)}`} disabled={saving} type="number" min="0" step="any" value={entry.ownQuantity} onChange={e => update(entry.productId, "ownQuantity", e.target.value)} className="mt-1 w-full rounded border px-2 py-1" /></label>
           </div>
           <p className="text-xs text-steel-600">Ingresá cantidades en la misma unidad base. Ejemplo: proveedor 1000 tornillos, mi artículo 100 tornillos.</p>
           <p className="text-sm">Precio para mi presentación: <strong>{preview === null ? "Completá cantidades y un precio válido" : formatPrice(preview, product?.currency)}</strong></p>
