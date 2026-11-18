@@ -18,6 +18,11 @@ describe("precio normal con oferta opcional", () => {
     expect(selectSupplierPrice(row, mapping, false)).toMatchObject({ raw: 100, source: "normal" });
     expect(selectSupplierPrice(row, mapping, true)).toMatchObject({ raw: 54.123, source: "offer", column: "Precio de oferta", error: null });
   });
+  it.each([0, -1, null, "Consultar"])("no usa un precio normal inválido cuando no hay oferta: %s", normal => {
+    const row = { "Precio normal": normal, "Precio de oferta": 0 };
+    expect(selectSupplierPrice(row, mapping, true).error).toContain("Precio normal inválido");
+    expect(selectSupplierPrice({ ...row, "Precio de oferta": 110 }, mapping, true)).toMatchObject({ source: "offer", raw: 110, error: null });
+  });
   it.each(["Consultar", "#VALUE!", -10, Infinity, NaN])("marca una oferta inválida sin reemplazarla silenciosamente por el normal: %s", offer => {
     const selected = selectSupplierPrice({ "Precio normal": 120, "Precio de oferta": offer }, mapping, true);
     expect(selected.source).toBe("offer");
