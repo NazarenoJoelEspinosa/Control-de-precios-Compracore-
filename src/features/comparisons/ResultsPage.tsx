@@ -442,6 +442,7 @@ function ProductDrawer({
           <Field label="Descripción" value={row.item.supplier_description} />
           <Field label="Precio original" value={row.item.parsed_price !== null ? formatPrice(row.item.parsed_price, row.item.supplier_currency ?? row.product?.currency ?? "ARS") : row.item.raw_price} />
           <Field label="Moneda proveedor" value={row.item.supplier_currency ?? "Según catálogo (lista anterior)"} />
+          {row.item.price_source && <Field label="Precio aplicado" value={`${row.item.price_source === "offer" ? "Oferta" : "Normal"}${row.item.source_price_column ? ` — ${row.item.source_price_column}` : ""}`} />}
           {priceIssue(row.item, row.product) && <p role="alert" className="rounded bg-danger-50 p-2 text-xs text-danger-500">{priceIssue(row.item, row.product)}</p>}
         </Section>
 

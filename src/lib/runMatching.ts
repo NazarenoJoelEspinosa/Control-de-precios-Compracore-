@@ -1,4 +1,5 @@
 import { selectCatalogCandidates, matchSelectedItems } from "./catalogMatching";
+import { selectSupplierPrice } from "./priceSelection";
 import { buildPrefixCodeIndex } from "./codePrefixes";
 import { presentationReviewReason, supplierPresentationLimits } from "./presentationReview";
 import { priceIssue } from "./pricePolicy";
@@ -137,14 +138,20 @@ export async function runMatchingForPriceList(priceListId: string, supplierId: s
     // XLSX conserva números tipados: 54.123 es un decimal, no el texto
     // argentino "54.123" (54 mil). No perder ese dato al serializar raw_price.
     const sourcePrice = priceColumn ? original.raw_data?.[priceColumn] : undefined;
-    try { parsedPrice = parseDecimal(typeof sourcePrice === "number" ? sourcePrice : original.raw_price,
-      numberFormat === "dot_decimal" || numberFormat === "comma_decimal" ? numberFormat : "auto"); }
+    const format = numberFormat === "dot_decimal" || numberFormat === "comma_decimal" ? numberFormat : "auto";
+    const selected = priceColumn && Object.prototype.hasOwnProperty.call(original.raw_data, priceColumn)
+      ? selectSupplierPrice(original.raw_data, sourceList!.column_mapping!, sourceList?.column_mapping?.price_selection === "offer_when_available", format) : undefined;
+    try {
+      if (selected?.error) throw new Error(selected.error);
+      parsedPrice = parseDecimal(selected ? selected.raw : typeof sourcePrice === "number" ? sourcePrice : original.raw_price, format);
+    }
     catch (error) { parseError = error instanceof Error ? error.message : "Precio inválido"; }
     const result = workerResults.matches[index];
     const discontinued = discontinuedCodes.has(original.supplier_code);
     const learned = discontinued ? undefined : conversionsByCode.get(original.supplier_code);
     let conversions = learned;
     const item: PriceListItem = { ...original, parsed_price: parsedPrice, parse_error: parseError,
+      ...(selected ? { raw_price: String(selected.raw ?? ""), price_source: selected.source, source_price_column: selected.column } : {}),
       supplier_currency: original.supplier_currency === undefined ? supplier?.default_currency : original.supplier_currency,
       comparison_error: null, matched_presentations: undefined,
       review_reason: result.presentationReason || (result.matchState === "not_found" ? "Sin coincidencia por código ni descripción suficiente." : ""),

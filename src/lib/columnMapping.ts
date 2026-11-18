@@ -1,6 +1,6 @@
 import { canonicalHeader } from "./normalize";
 
-export type ColumnField = "code" | "description" | "price" | "unit" | "brand" | "ean" | "currency";
+export type ColumnField = "code" | "description" | "price" | "offerPrice" | "unit" | "brand" | "ean" | "currency";
 
 /**
  * Alias conocidos por campo — portado de FILE_ALIASES en CompraCore, ampliado.
@@ -10,7 +10,8 @@ export type ColumnField = "code" | "description" | "price" | "unit" | "brand" | 
 const FIELD_ALIASES: Record<ColumnField, string[]> = {
   code: ["codigo", "cod", "sku", "codigo interno", "codigo producto", "id", "articulo", "cod articulo", "referencia"],
   description: ["descripcion", "desc", "producto", "detalle", "nombre", "denominacion", "articulo descripcion"],
-  price: ["precio", "precio lista", "precio neto", "precio unitario", "importe", "pvp", "precio venta", "costo"],
+  price: ["precio", "precio normal", "precio lista", "precio de lista", "precio neto", "precio unitario", "importe", "pvp", "precio venta", "costo"],
+  offerPrice: ["oferta", "precio oferta", "precio de oferta", "precio promocional", "precio promocion", "precio de promocion"],
   unit: ["unidad", "un", "u medida", "unidad medida", "presentacion", "embalaje"],
   brand: ["marca", "fabricante"],
   ean: ["ean", "codigo barras", "cod barras", "barcode"],
@@ -21,6 +22,7 @@ export interface ColumnMapping {
   code?: string;
   description?: string;
   price?: string;
+  offerPrice?: string;
   unit?: string;
   brand?: string;
   ean?: string;
@@ -42,3 +44,4 @@ export function suggestColumnMapping(headers: string[]): ColumnMapping {
 
   return mapping;
 }
+

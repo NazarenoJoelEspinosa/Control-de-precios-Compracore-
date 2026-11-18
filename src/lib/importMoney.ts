@@ -2,11 +2,13 @@ import { parseDecimal, type PriceNumberFormat } from "./normalize";
 import { parsePriceCurrency } from "./pricePolicy";
 import type { Currency } from "@/types/database";
 import type { ColumnMapping } from "./columnMapping";
+import { selectSupplierPrice } from "./priceSelection";
 
 export interface ImportMoneyOptions {
   numberFormat: PriceNumberFormat;
   currencyChoices: Record<string, Currency>;
   askCurrency?: boolean;
+  preferOffer?: boolean;
 }
 export const emptyMoneyOptions = (): ImportMoneyOptions => ({ numberFormat: "auto", currencyChoices: {}, askCurrency: true });
 
@@ -39,7 +41,8 @@ export function inspectImportMoney(rows: Record<string, unknown>[], mapping: Col
   let ambiguous = false;
   for (const row of rows) {
     if (!String(row[mapping.code ?? ""] ?? "").trim()) continue;
-    const price = row[mapping.price ?? ""], currency = row[mapping.currency ?? ""];
+    const selection = selectSupplierPrice(row, mapping, options.preferOffer, options.numberFormat);
+    const price = selection.raw, currency = row[mapping.currency ?? ""];
     const detected = parsePriceCurrency(price, currency, "ARS");
     if (detected.error?.includes("contradicen")) { conflicts.add(detected.error); continue; }
     const question = currencyQuestion(price, currency);

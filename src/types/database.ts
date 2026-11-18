@@ -39,6 +39,8 @@ export interface SupplierColumnConfig {
   code_column: string | null;
   description_column: string | null;
   price_column: string | null;
+  offer_price_column?: string | null;
+  prefer_offer?: boolean;
   unit_column: string | null;
   brand_column: string | null;
   ean_column: string | null;
@@ -93,6 +95,8 @@ export interface PriceListItem {
   currency_error?: string | null;
   comparison_error?: string | null;
   raw_price: string;
+  price_source?: "normal" | "offer";
+  source_price_column?: string;
   parsed_price: number | null;
   parse_error: string | null;
   matched_product_id: string | null;

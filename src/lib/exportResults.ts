@@ -61,6 +61,8 @@ const COLUMNS: ColumnDef[] = [
   { header: "Aviso de precio", width: 55, key: "price_issue" },
   { header: "Conversión aplicada", width: 35, key: "conversion" },
   { header: "Precio original proveedor", width: 25, key: "supplier_price" },
+  { header: "Precio aplicado", width: 18, key: "price_source" },
+  { header: "Columna de precio usada", width: 28, key: "price_column" },
 ];
 
 async function buildWorkbook(rows: ExportRow[], title: string, sheetName: string): Promise<ExcelJS.Workbook> {
@@ -123,6 +125,8 @@ async function buildWorkbook(rows: ExportRow[], title: string, sheetName: string
     excelRow.getCell(14).value = conversion ? `x${conversion.supplier_quantity} → x${conversion.own_quantity}; dividir por ${conversion.supplier_quantity / conversion.own_quantity}` : "";
     excelRow.getCell(15).value = row.item.parsed_price ?? row.item.raw_price;
     excelRow.getCell(15).numFmt = "#,##0.00";
+    excelRow.getCell(16).value = row.item.price_source === "offer" ? "Oferta" : row.item.price_source === "normal" ? "Normal" : "";
+    excelRow.getCell(17).value = row.item.source_price_column ?? "";
     excelRow.getCell(10).value = row.change ? CHANGE_STATUS_LABELS[row.change.status] ?? row.change.status : "";
 
     [5, 6, 7].forEach((col) => {

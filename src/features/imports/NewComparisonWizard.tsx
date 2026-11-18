@@ -10,6 +10,7 @@ import type { ImportMoneyOptions } from "@/lib/importMoney";
 import { parseSpreadsheetFile, type ParsedFile } from "@/lib/fileParsing";
 import { suggestColumnMapping, type ColumnMapping } from "@/lib/columnMapping";
 import type { Supplier } from "@/types/database";
+import { selectSupplierPrice } from "@/lib/priceSelection";
 
 const STEPS = ["Proveedor", "Tu catálogo actual", "Lista nueva", "Confirmar columnas", "Procesar"] as const;
 
@@ -55,7 +56,7 @@ export default function NewComparisonWizard() {
     const suggested = suggestColumnMapping(parsed.headers);
     const appSettings = await settingsRepo.get();
     const saved = appSettings.remember_column_mapping === false ? undefined : await supplierColumnConfigRepo.get(supplierId);
-    setMoneyOptions({ ...emptyMoneyOptions(), numberFormat: saved?.price_number_format ?? "auto" });
+    setMoneyOptions({ ...emptyMoneyOptions(), numberFormat: saved?.price_number_format ?? "auto", preferOffer: saved?.prefer_offer ?? false });
     if (saved) {
       // Sólo usamos el mapeo guardado si las columnas que recuerda todavía
       // existen en este archivo — si el proveedor cambió el formato, mejor
@@ -64,6 +65,7 @@ export default function NewComparisonWizard() {
         code: saved.code_column ?? undefined,
         description: saved.description_column ?? undefined,
         price: saved.price_column ?? undefined,
+        offerPrice: saved.offer_price_column && parsed.headers.includes(saved.offer_price_column) ? saved.offer_price_column : undefined,
         unit: saved.unit_column ?? undefined,
         brand: saved.brand_column ?? undefined,
         ean: saved.ean_column ?? undefined,
@@ -89,12 +91,15 @@ export default function NewComparisonWizard() {
     try {
       const inspection = inspectImportMoney(supplierParsed.rows, mapping, moneyOptions);
       if (inspection.unresolved || inspection.needsFormat) throw new Error("Volvé a confirmar columnas y elegí la moneda y los separadores pendientes.");
+      if (moneyOptions.preferOffer && (!mapping.offerPrice || mapping.offerPrice === mapping.price)) throw new Error("Elegí una columna de oferta distinta del precio normal.");
       const previousConfig = await supplierColumnConfigRepo.get(supplierId);
       await supplierColumnConfigRepo.save(supplierId, {
         ...previousConfig,
         code_column: mapping.code ?? null,
         description_column: mapping.description ?? null,
         price_column: mapping.price ?? null,
+        offer_price_column: mapping.offerPrice ?? null,
+        prefer_offer: moneyOptions.preferOffer === true,
         unit_column: mapping.unit ?? null,
         brand_column: mapping.brand ?? null,
         ean_column: mapping.ean ?? null,
@@ -107,12 +112,13 @@ export default function NewComparisonWizard() {
         file_name: supplierFile.name,
         row_count: supplierParsed.rows.length,
         status: "mapped",
-        column_mapping: { ...mapping, number_format: moneyOptions.numberFormat } as Record<string, string>,
+        column_mapping: { ...mapping, number_format: moneyOptions.numberFormat, price_selection: moneyOptions.preferOffer ? "offer_when_available" : "normal" } as Record<string, string>,
       });
 
       await priceListItemsRepo.bulkCreate(
         supplierParsed.rows.filter(row => String(row[mapping.code ?? ""] ?? "").trim()).map((row) => {
-          const money = importCurrency(row[mapping.price ?? ""], row[mapping.currency ?? ""], suppliers.find(s => s.id === supplierId)?.default_currency ?? "ARS", moneyOptions);
+          const selected = selectSupplierPrice(row, mapping, moneyOptions.preferOffer, moneyOptions.numberFormat);
+          const money = importCurrency(selected.raw, row[mapping.currency ?? ""], suppliers.find(s => s.id === supplierId)?.default_currency ?? "ARS", moneyOptions);
           if (money.error) throw new Error(money.error);
           return ({
           price_list_id: priceList.id,
@@ -122,9 +128,11 @@ export default function NewComparisonWizard() {
           supplier_brand: String(row[mapping.brand ?? ""] ?? "").trim(),
           supplier_currency: money.currency,
           currency_error: money.error,
-          raw_price: String(row[mapping.price ?? ""] ?? ""),
+          raw_price: String(selected.raw ?? ""),
+          price_source: selected.source,
+          source_price_column: selected.column,
           parsed_price: null,
-          parse_error: null,
+          parse_error: selected.error,
           matched_product_id: null,
           match_level: null,
           match_score: null,
@@ -324,7 +332,8 @@ function StepUpload({
 const FIELD_LABELS: Record<keyof ColumnMapping, string> = {
   code: "Código",
   description: "Descripción",
-  price: "Precio",
+  price: "Precio normal",
+  offerPrice: "Precio de oferta",
   unit: "Unidad",
   brand: "Marca",
   ean: "EAN",
@@ -353,7 +362,8 @@ function StepMapping({
   previewRows: Record<string, unknown>[];
 }) {
   const moneyInspection = inspectImportMoney(allRows, mapping, moneyOptions);
-  const requiredOk = mapping.code && mapping.description && mapping.price && !moneyInspection.unresolved && !moneyInspection.needsFormat;
+  const offerMappingOk = !moneyOptions.preferOffer || (mapping.offerPrice && mapping.offerPrice !== mapping.price);
+  const requiredOk = mapping.code && mapping.description && mapping.price && offerMappingOk && !moneyInspection.unresolved && !moneyInspection.needsFormat;
   return (
     <div>
       <h2 className="mb-1 font-display text-lg font-semibold text-ink">Paso 4 — Confirmar columnas</h2>
@@ -386,6 +396,11 @@ function StepMapping({
           </div>
         ))}
       </div>
+      <div className="mt-4 space-y-2 rounded border border-steel-200 p-3 text-sm">
+        <label className="flex items-start gap-2"><input type="checkbox" checked={moneyOptions.preferOffer === true} onChange={e => onMoneyChange({ ...moneyOptions, preferOffer: e.target.checked })}/><span>Usar oferta cuando tenga precio; si no, usar precio normal</span></label>
+        <p className="text-xs text-steel-600">Una oferta vacía o en cero usa el precio normal. Una oferta inválida se marca para revisión. Esta elección se recuerda para este proveedor.</p>
+        {!offerMappingOk && <p role="alert" className="text-xs text-danger-500">Elegí una columna de oferta distinta del precio normal.</p>}
+      </div>
       <div className="mt-4"><ImportMoneySettings rows={allRows} mapping={mapping} value={moneyOptions} onChange={onMoneyChange}/></div>
       {(!mapping.code || !mapping.description || !mapping.price) && (
         <p className="mt-3 text-xs text-amber-600">Código, descripción y precio son obligatorios para continuar.</p>
@@ -395,8 +410,9 @@ function StepMapping({
         <div className="overflow-x-auto">
           <table className="w-full min-w-[650px] text-xs"><thead className="border-b border-steel-100"><tr>
             {(["code","description","unit","price","brand"] as const).map(field=><th key={field} className="px-3 py-2 text-left font-medium text-steel-600">{FIELD_LABELS[field]}</th>)}
+            {moneyOptions.preferOffer && <><th className="px-3 py-2 text-left">Oferta</th><th className="px-3 py-2 text-left">Precio que se usará</th></>}
           </tr></thead><tbody className="divide-y divide-steel-100">
-            {previewRows.map((row,i)=><tr key={i}><td className="px-3 py-2">{String(row[mapping.code ?? ""] ?? "")}</td><td className="px-3 py-2">{String(row[mapping.description ?? ""] ?? "")}</td><td className="px-3 py-2">{String(row[mapping.unit ?? ""] ?? "")}</td><td className="px-3 py-2">{String(row[mapping.price ?? ""] ?? "")}</td><td className="px-3 py-2">{String(row[mapping.brand ?? ""] ?? "")}</td></tr>)}
+            {previewRows.map((row,i)=>{ const selected = selectSupplierPrice(row, mapping, moneyOptions.preferOffer, moneyOptions.numberFormat); return <tr key={i}><td className="px-3 py-2">{String(row[mapping.code ?? ""] ?? "")}</td><td className="px-3 py-2">{String(row[mapping.description ?? ""] ?? "")}</td><td className="px-3 py-2">{String(row[mapping.unit ?? ""] ?? "")}</td><td className="px-3 py-2">{String(row[mapping.price ?? ""] ?? "")}</td><td className="px-3 py-2">{String(row[mapping.brand ?? ""] ?? "")}</td>{moneyOptions.preferOffer && <><td className="px-3 py-2">{String(row[mapping.offerPrice ?? ""] ?? "")}</td><td className="px-3 py-2">{selected.error ?? `${selected.source === "offer" ? "Oferta" : "Normal"}: ${String(selected.raw ?? "")}`}</td></>}</tr>; })}
           </tbody></table>
         </div>
       </div>
