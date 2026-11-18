@@ -22,6 +22,15 @@ async function capture(action: () => Promise<void>) {
   } finally { create.mockRestore(); revoke.mockRestore(); vi.unstubAllGlobals(); }
 }
 describe("Excel de resultados", () => {
+  it("muestra si el importe aplicado viene de oferta o del precio normal", async () => {
+    const offer = row(); offer.item = { ...offer.item, price_source: "offer", source_price_column: "Precio oferta" };
+    const normal = row(); normal.item = { ...normal.item, price_source: "normal", source_price_column: "Precio lista" };
+    const sheet = await capture(() => exportAllResults([offer, normal], "test.xlsx"));
+    expect(sheet.getRow(4).getCell(16).value).toBe("Oferta");
+    expect(sheet.getRow(4).getCell(17).value).toBe("Precio oferta");
+    expect(sheet.getRow(5).getCell(16).value).toBe("Normal");
+    expect(sheet.getRow(5).getCell(17).value).toBe("Precio lista");
+  });
   it("el Excel usa la misma definición de aprobados que la pantalla y excluye identidades pendientes", async () => {
     const unconfirmed = row(); unconfirmed.item.match_state = "review";
     const missing = row(); missing.product = null;

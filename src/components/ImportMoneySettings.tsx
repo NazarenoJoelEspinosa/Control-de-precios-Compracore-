@@ -2,6 +2,7 @@ import { formatPrice } from "@/lib/normalize";
 import { currencyChoice, importPrice, inspectImportMoney, type ImportMoneyOptions } from "@/lib/importMoney";
 import type { ColumnMapping } from "@/lib/columnMapping";
 import type { Currency } from "@/types/database";
+import { selectSupplierPrice } from "@/lib/priceSelection";
 
 export default function ImportMoneySettings({ rows, mapping, value, onChange }: {
   rows: Record<string, unknown>[]; mapping: ColumnMapping; value: ImportMoneyOptions; onChange: (v: ImportMoneyOptions) => void;
@@ -18,9 +19,10 @@ export default function ImportMoneySettings({ rows, mapping, value, onChange }: 
     {inspection.conflicts.map(message => <p role="alert" className="text-danger-500" key={message}>{message}</p>)}
     {inspection.questions.map(label => <label className="block" key={label}>¿Qué moneda significa «{label}»?<select aria-label={`Moneda para ${label}`} className="field-control mt-1 w-full" value={currencyChoice(value, label) ?? ""} onChange={e => { const choices = { ...value.currencyChoices, [label]: e.target.value as Currency }; if (!e.target.value) delete choices[label]; onChange({ ...value, currencyChoices: choices }); }}><option value="">Elegir moneda</option><option value="ARS">ARS — Pesos</option><option value="USD">USD — Dólares</option></select></label>)}
     {mapping.price && <div className="space-y-1 text-xs"><p className="font-semibold">Vista previa del importe</p>{examples.map((r, i) => {
-      const raw = r[mapping.price!]; let parsed: string;
-      try { parsed = formatPrice(importPrice(raw, value)).replace(/^ARS /, ""); } catch (e) { parsed = e instanceof Error ? e.message : "Precio inválido"; }
-      return <p key={i}>{String(raw ?? "")} → {parsed}</p>;
+      const selection = selectSupplierPrice(r, mapping, value.preferOffer, value.numberFormat);
+      const raw = selection.raw; let parsed: string;
+      try { if (selection.error) throw new Error(selection.error); parsed = formatPrice(importPrice(raw, value)).replace(/^ARS /, ""); } catch (e) { parsed = e instanceof Error ? e.message : "Precio inválido"; }
+      return <p key={i}>{value.preferOffer ? `${selection.source === "offer" ? "Oferta" : "Normal"}: ` : ""}{String(raw ?? "")} → {parsed}</p>;
     })}</div>}
   </fieldset>;
 }
