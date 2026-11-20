@@ -7,14 +7,14 @@ import { priceIssue } from "@/lib/pricePolicy";
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import clsx from "clsx";
-import { comparisonSessionsRepo, priceChangesRepo, priceListItemsRepo, productsRepo } from "@/lib/db";
+import { comparisonSessionsRepo, priceChangesRepo, priceListItemsRepo, productsRepo, suppliersRepo } from "@/lib/db";
 import { MatchStateBadge, PriceDeltaBadge, ChangeStatusBadge } from "@/components/ui/StatusBadges";
 import PresentationConversionEditor from "@/components/PresentationConversionEditor";
 import { convertPresentationPrice } from "@/lib/presentationConversions";
 import { formatPrice } from "@/lib/normalize";
 import { decidePriceChange, decidePriceChanges } from "@/lib/reviewActions";
 import { exportAllResults, type ExportRow } from "@/lib/exportResults";
-import { exportUpdatePriceList, exportApprovedChangeSummary } from "@/lib/exportPriceLists";
+import { exportUpdatePriceList, exportCustomComparison } from "@/lib/exportPriceLists";
 import type { ComparisonSession, PriceListItem, Product } from "@/types/database";
 
 const PRIMARY_VIEWS: { key: ResultView; label: string }[] = [
@@ -65,7 +65,7 @@ export default function ResultsPage() {
   const [sort, setSort] = useState<SortKey>("none");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<ExportRow | null>(null);
-  const [exporting, setExporting] = useState<"all" | "approved" | "summary" | null>(null);
+  const [exporting, setExporting] = useState<"all" | "approved" | "simple" | null>(null);
   const [actionError, setActionError] = useState("");
   const [deciding, setDeciding] = useState(false);
   const [restoreEpoch, setRestoreEpoch] = useState(0);
@@ -193,12 +193,14 @@ export default function ResultsPage() {
     finally { setDeciding(false); }
   }
 
-  async function downloadResults(kind: "all" | "approved" | "summary") {
+  async function downloadResults(kind: "all" | "approved" | "simple") {
     if (!session) return;
     setExporting(kind); setActionError("");
     try {
-      if (kind === "approved") await exportUpdatePriceList(rows, `compracore-precios-${session.id.slice(0, 8)}.xlsx`);
-      else if (kind === "summary") await exportApprovedChangeSummary(rows, `compracore-cambios-${session.id.slice(0, 8)}.xlsx`);
+      if (kind === "approved") {
+        const supplier = await suppliersRepo.get(session.supplier_id);
+        await exportCustomComparison(rows, `compracore-comparacion-${session.id.slice(0, 8)}.xlsx`, `CompraCore — ${supplier?.name ?? "Proveedor"} — ${new Date(session.created_at).toLocaleDateString("es-AR")}`);
+      } else if (kind === "simple") await exportUpdatePriceList(rows, `compracore-precios-${session.id.slice(0, 8)}.xlsx`);
       else await exportAllResults(rows, `pricecore-resultados-${session.id.slice(0, 8)}.xlsx`);
     } catch (e) { setActionError(e instanceof Error ? e.message : "No se pudo exportar."); }
     finally { setExporting(null); }
@@ -241,10 +243,10 @@ export default function ResultsPage() {
           </h1>
         </div>
         <div className="flex flex-wrap items-start gap-2">
-          <button onClick={() => void downloadResults("approved")} disabled={exporting !== null || exportableCount === 0} className="rounded bg-teal-500 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{exporting === "approved" ? "Generando…" : "Descargar lista para actualizar"}</button>
+          <button onClick={() => void downloadResults("approved")} disabled={exporting !== null || exportableCount === 0} className="rounded bg-teal-500 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{exporting === "approved" ? "Generando…" : "Descargar Excel personalizado"}</button>
           <details className="relative text-sm"><summary className="cursor-pointer rounded border border-steel-200 bg-white px-3 py-2">Más acciones</summary>
             <div className="absolute right-0 z-20 mt-2 w-64 space-y-2 rounded border border-steel-200 bg-white p-3 shadow-lg">
-              <button onClick={() => void downloadResults("summary")} disabled={exporting !== null || exportableCount === 0} className="block w-full rounded px-2 py-2 text-left text-steel-700 hover:bg-steel-50">{exporting === "summary" ? "Generando…" : "Resumen de cambios aprobados"}</button>
+              <button onClick={() => void downloadResults("simple")} disabled={exporting !== null || exportableCount === 0} className="block w-full rounded px-2 py-2 text-left text-steel-700 hover:bg-steel-50">{exporting === "simple" ? "Generando…" : "Lista simple (4 columnas)"}</button>
               <button onClick={() => void downloadResults("all")} disabled={exporting !== null} className="block w-full rounded px-2 py-2 text-left text-steel-700 hover:bg-steel-50">{exporting === "all" ? "Generando…" : "Informe completo (todos los resultados)"}</button>
               {!isClosed && <button disabled={deciding} onClick={() => void finalize()} className="block w-full rounded px-2 py-2 text-left text-teal-600 hover:bg-teal-50">Finalizar comparación</button>}
               <button onClick={handleDeleteSession} className="block w-full border-t border-steel-100 px-2 py-2 text-left text-danger-500">Eliminar comparación</button>
@@ -253,7 +255,7 @@ export default function ResultsPage() {
         </div>
       </div>
 
-      <p className="mb-4 -mt-3 text-xs text-steel-600">Lista para actualizar: Código, Descripción, Precio y Moneda. Sólo cambios aprobados, con encabezados en la primera fila. En Más acciones podés descargar el resumen de cambios o el informe completo.</p>
+      <p className="mb-4 -mt-3 text-xs text-steel-600">Excel personalizado: primera hoja con códigos, descripción, precios y variación; segunda hoja con el detalle completo. La primera hoja sólo incluye cambios aprobados. En Más acciones sigue disponible la lista simple de 4 columnas.</p>
       <section aria-label="Avance de identificación" className="panel mb-4 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div><h2 className="text-sm font-semibold">Tu catálogo: <span className="mono-num">{identifiedOwnCount} de {catalogTotal}</span> artículos identificados</h2><p className="mt-1 text-xs text-steel-600">{Math.max(0, catalogTotal - identifiedOwnCount)} artículos propios pendientes de identificar en la lista del proveedor. Aprobar precios es otro paso.</p></div>

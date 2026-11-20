@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import ExcelJS from "exceljs";
-import { exportUpdatePriceList, exportApprovedChangeSummary } from "../exportPriceLists";
+import { exportUpdatePriceList, exportApprovedChangeSummary, exportCustomComparison } from "../exportPriceLists";
 import type { ExportRow } from "../exportResults";
 
 function row(): ExportRow {
@@ -11,7 +11,7 @@ function row(): ExportRow {
   };
 }
 
-async function capture(action: () => Promise<void>) {
+async function captureBook(action: () => Promise<void>) {
   let blob: Blob | undefined;
   vi.stubGlobal("document", { createElement: () => ({ click() {}, href: "", download: "" }) });
   const create = vi.spyOn(URL, "createObjectURL").mockImplementation(value => { blob = value as Blob; return "blob:test"; });
@@ -19,11 +19,53 @@ async function capture(action: () => Promise<void>) {
   try {
     await action();
     const book = new ExcelJS.Workbook(); await book.xlsx.load(await blob!.arrayBuffer());
-    return book.worksheets[0];
+    return book;
   } finally { create.mockRestore(); revoke.mockRestore(); vi.unstubAllGlobals(); }
 }
+async function capture(action: () => Promise<void>) { return (await captureBook(action)).worksheets[0]; }
 
 describe("listas simples para actualizar precios", () => {
+  it("el Excel personalizado reúne la lista de siete columnas y el detalle completo", async () => {
+    const pending = row(); pending.change!.status = "pending";
+    const book = await captureBook(() => exportCustomComparison([row(), pending], "koln.xlsx", "CompraCore — Machos Koln"));
+    expect(book.worksheets.map(s => s.name)).toEqual(["Lista de precios", "Detalle completo"]);
+    const sheet = book.worksheets[0];
+    expect(sheet.columnCount).toBe(7); expect(sheet.rowCount).toBe(4);
+    expect(sheet.getCell("A1").value).toBe("CompraCore — Machos Koln");
+    expect(sheet.getRow(3).values).toEqual([undefined, "Código interno", "Código proveedor", "Descripción interna", "Precio anterior", "Precio nuevo", "Diferencia", "Porcentaje"]);
+    expect(sheet.getRow(4).values).toEqual([undefined, "000123", "PROV-CAJA", "Mi artículo x100", 900, 1000, 100, 100 / 900]);
+    expect(sheet.views[0]).toMatchObject({ state: "frozen", ySplit: 3 });
+    expect(sheet.autoFilter).toBe("A3:G4");
+    expect(book.worksheets[1].rowCount).toBe(5);
+    expect(book.worksheets[1].getCell("J5").value).toBe("Pendiente");
+    expect(book.worksheets[1].getCell("J5").fill).toMatchObject({ fgColor: { argb: "FFFFF3CD" } });
+  });
+  it("colorea subas y bajas y conserva la moneda en las siete columnas", async () => {
+    const lower = row(); lower.product = { ...lower.product!, id: "p2", code: "000124", currency: "USD" };
+    lower.item = { ...lower.item, supplier_currency: "USD", matched_product_id: "p2", matched_presentations: [{ product_id: "p2", supplier_quantity: 1000, own_quantity: 100 }] };
+    lower.change = { ...lower.change!, product_id: "p2", new_price: 850, new_currency: "USD", old_currency: "USD", diff_absolute: -50 };
+    const book = await captureBook(() => exportCustomComparison([row(), lower], "test.xlsx"));
+    const sheet = book.worksheets[0];
+    expect(sheet.getCell("F4").fill).toMatchObject({ fgColor: { argb: "FFFDE9E7" } });
+    expect(sheet.getCell("F5").fill).toMatchObject({ fgColor: { argb: "FFE8F4EA" } });
+    expect(sheet.getCell("E5").value).toBe(850);
+    expect(sheet.getCell("E5").numFmt).toContain("USD");
+    expect(sheet.getCell("A4").type).toBe(ExcelJS.ValueType.String);
+  });
+  it("el detalle usa también el precio editado y su diferencia real", async () => {
+    const edited = row(); edited.change!.final_new_price = 950;
+    const book = await captureBook(() => exportCustomComparison([edited], "test.xlsx"));
+    expect(book.worksheets[0].getCell("E4").value).toBe(950);
+    expect(book.worksheets[1].getCell("F4").value).toBe(950);
+    expect(book.worksheets[1].getCell("G4").value).toBe(50);
+    expect(book.worksheets[1].getCell("H4").value).toBeCloseTo(50 / 900 * 100);
+  });
+  it("si se consolidan filas iguales, conserva todos los códigos del proveedor", async () => {
+    const duplicate = row(); duplicate.item = { ...duplicate.item, supplier_code: "OTRO-CODIGO" };
+    const sheet = await capture(() => exportCustomComparison([row(), duplicate], "test.xlsx"));
+    expect(sheet.rowCount).toBe(4);
+    expect(sheet.getCell("B4").value).toBe("PROV-CAJA / OTRO-CODIGO");
+  });
   it("sólo tiene cuatro columnas, encabezados en la fila 1 y datos propios desde la fila 2", async () => {
     const sheet = await capture(() => exportUpdatePriceList([row()], "precios.xlsx"));
     expect(sheet.columnCount).toBe(4); expect(sheet.rowCount).toBe(2);

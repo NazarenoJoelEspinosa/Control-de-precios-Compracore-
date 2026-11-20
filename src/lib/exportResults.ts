@@ -31,6 +31,7 @@ const STATE_COLORS: Record<PriceListItem["match_state"], { fill: string; font: s
 };
 
 const CHANGE_STATUS_LABELS: Record<string, string> = {
+  pending: "Pendiente",
   approved: "Aprobado",
   rejected: "Rechazado",
   edited: "Editado",
@@ -65,14 +66,9 @@ const COLUMNS: ColumnDef[] = [
   { header: "Columna de precio usada", width: 28, key: "price_column" },
 ];
 
-async function buildWorkbook(rows: ExportRow[], title: string, sheetName: string): Promise<ExcelJS.Workbook> {
-  const ExcelJS = (await import("exceljs")).default;
-  const workbook = new ExcelJS.Workbook();
-  workbook.creator = "PriceCore";
-  workbook.created = new Date();
-
+export function addDetailedResultsSheet(workbook: ExcelJS.Workbook, rows: ExportRow[], title: string, sheetName: string): void {
   const sheet = workbook.addWorksheet(sheetName, {
-    views: [{ state: "frozen", ySplit: 3 }],
+    views: [{ state: "frozen", ySplit: 3, showGridLines: false }],
   });
 
   sheet.columns = COLUMNS.map((c) => ({ key: c.key, width: c.width }));
@@ -86,7 +82,10 @@ async function buildWorkbook(rows: ExportRow[], title: string, sheetName: string
   sheet.getRow(1).height = 26;
 
   // Fila 2 vacía como respiro visual
-  sheet.getRow(2).height = 6;
+  sheet.mergeCells(2, 1, 2, COLUMNS.length);
+  sheet.getCell("A2").value = "Rojo: subas · Verde: bajas · Amarillo: pendiente de revisión · Gris: sin cambios. Consultá las columnas de estado y avisos.";
+  sheet.getCell("A2").font = { name: "Calibri", size: 10, color: { argb: "FF52606D" } };
+  sheet.getRow(2).height = 20;
 
   // Encabezado (fila 3)
   const headerRow = sheet.getRow(3);
@@ -100,15 +99,16 @@ async function buildWorkbook(rows: ExportRow[], title: string, sheetName: string
   });
   headerRow.height = 20;
 
-  sheet.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3, column: COLUMNS.length } };
+  sheet.autoFilter = { from: { row: 3, column: 1 }, to: { row: Math.max(3, rows.length + 3), column: COLUMNS.length } };
 
   // Filas de datos
   rows.forEach((row, idx) => {
     const excelRow = sheet.getRow(4 + idx);
-    const oldPrice = row.change?.old_price ?? null;
+    const oldPrice = row.change?.old_price ?? row.product?.current_price ?? null;
     const conversion = row.item.matched_presentations?.find(c => c.product_id === row.product?.id);
     const issue = priceIssue(row.item, row.product);
     const newPrice = issue ? null : row.change ? row.change.final_new_price ?? row.change.new_price : conversion && row.item.parsed_price !== null ? convertPresentationPrice(row.item.parsed_price, conversion.supplier_quantity, conversion.own_quantity) : row.item.parsed_price;
+    const difference = oldPrice !== null && newPrice !== null ? Math.round((newPrice - oldPrice) * 100) / 100 : null;
 
     excelRow.getCell(1).value = row.product?.code ?? "";
     excelRow.getCell(2).value = row.item.supplier_code;
@@ -116,8 +116,8 @@ async function buildWorkbook(rows: ExportRow[], title: string, sheetName: string
     excelRow.getCell(4).value = row.product?.description ?? "";
     excelRow.getCell(5).value = oldPrice;
     excelRow.getCell(6).value = newPrice;
-    excelRow.getCell(7).value = row.change?.diff_absolute ?? null;
-    excelRow.getCell(8).value = row.change?.diff_percent ?? null;
+    excelRow.getCell(7).value = difference;
+    excelRow.getCell(8).value = difference !== null && oldPrice! > 0 ? difference / oldPrice! * 100 : null;
     excelRow.getCell(9).value = STATE_LABELS[row.item.match_state];
     excelRow.getCell(11).value = row.item.supplier_currency ?? row.product?.currency ?? "";
     excelRow.getCell(12).value = row.product?.currency ?? "";
@@ -130,7 +130,7 @@ async function buildWorkbook(rows: ExportRow[], title: string, sheetName: string
     excelRow.getCell(10).value = row.change ? CHANGE_STATUS_LABELS[row.change.status] ?? row.change.status : "";
 
     [5, 6, 7].forEach((col) => {
-      excelRow.getCell(col).numFmt = '"$" #,##0.00';
+      excelRow.getCell(col).numFmt = row.product?.currency === "USD" ? '"USD" #,##0.00' : '"$" #,##0.00';
     });
     excelRow.getCell(8).numFmt = '0.0"%"';
 
@@ -151,8 +151,26 @@ async function buildWorkbook(rows: ExportRow[], title: string, sheetName: string
     for (let col = 1; col <= COLUMNS.length; col++) {
       excelRow.getCell(col).border = { bottom: { style: "hair", color: { argb: "FFE4E8EC" } } };
     }
+    excelRow.height = Math.min(400, Math.max(26, Math.ceil(Math.max(row.product?.description.length ?? 0, row.item.supplier_description.length) / 38) * 14 + 6));
+    for (const col of [3, 4, 13, 14]) excelRow.getCell(col).alignment = { vertical: "middle", wrapText: true };
+    for (const col of [1, 2]) excelRow.getCell(col).numFmt = "@";
+    const status = resultStatus(row);
+    const review = ["identification", "presentations", "price", "pending"].includes(status);
+    if (review) for (const col of [10, 13]) {
+      excelRow.getCell(col).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF3CD" } };
+    }
+    if (difference !== null) for (const col of [7, 8]) {
+      excelRow.getCell(col).fill = { type: "pattern", pattern: "solid", fgColor: { argb: difference > 0 ? "FFFDE9E7" : difference < 0 ? "FFE8F4EA" : "FFF0F2F4" } };
+      excelRow.getCell(col).font = { name: "Calibri", size: 11, bold: true, color: { argb: difference > 0 ? "FF9C2920" : difference < 0 ? "FF236B38" : "FF52606D" } };
+    }
   });
+}
 
+async function buildWorkbook(rows: ExportRow[], title: string, sheetName: string): Promise<ExcelJS.Workbook> {
+  const ExcelJS = (await import("exceljs")).default;
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "CompraCore"; workbook.created = new Date();
+  addDetailedResultsSheet(workbook, rows, title, sheetName);
   return workbook;
 }
 
